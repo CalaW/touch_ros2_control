@@ -4,8 +4,7 @@
   <name>touch_hardware</name>
   <version>0.0.0</version>
   <description>ros2_control hardware interface for Geomagic Touch / Touch X devices.</description>
-
-  <maintainer email="calaw@example.com">calaw</maintainer>
+  <maintainer email="git@thu-irml.com">dental</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>

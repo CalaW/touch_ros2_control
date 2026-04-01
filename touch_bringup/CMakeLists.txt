@@ -1,6 +1,7 @@
-cmake_minimum_required(VERSION 3.16)
-project(touch_bringup LANGUAGES CXX)
+cmake_minimum_required(VERSION 3.8)
+project(touch_bringup)
 
+# find dependencies
 find_package(ament_cmake REQUIRED)
 
 install(

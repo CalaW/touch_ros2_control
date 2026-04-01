@@ -4,8 +4,7 @@
   <name>touch_description</name>
   <version>0.0.0</version>
   <description>URDF/xacro description for the minimal ros2_control Touch workspace.</description>
-
-  <maintainer email="calaw@example.com">calaw</maintainer>
+  <maintainer email="git@thu-irml.com">dental</maintainer>
   <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
