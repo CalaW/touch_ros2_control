@@ -34,6 +34,8 @@ endforeach()
 add_library(${PROJECT_NAME} SHARED
   src/touch_system.cpp
 )
+# Suppress "missing braces around initializer" warning for std::array initialization
+target_compile_options(${PROJECT_NAME} PRIVATE -Wno-missing-braces)
 target_compile_features(${PROJECT_NAME} PUBLIC cxx_std_17)
 target_include_directories(${PROJECT_NAME} PUBLIC
   $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
