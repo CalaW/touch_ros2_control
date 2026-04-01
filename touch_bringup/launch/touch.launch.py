@@ -19,8 +19,9 @@ def generate_launch_description():
             ),
             " use_mock_hardware:=",
             use_mock_hardware,
-            " device_name:=",
+            " device_name:='",
             device_name,
+            "'",
         ]
     )
     robot_description = {
@@ -61,8 +62,8 @@ def generate_launch_description():
 
     return LaunchDescription(
         [
-            DeclareLaunchArgument("use_mock_hardware", default_value="true"),
-            DeclareLaunchArgument("device_name", default_value="left"),
+            DeclareLaunchArgument("use_mock_hardware", default_value="false"),
+            DeclareLaunchArgument("device_name", default_value="Default Device"),
             controller_manager_node,
             robot_state_publisher_node,
             joint_state_broadcaster_spawner,

@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="touch">
-  <xacro:arg name="use_mock_hardware" default="true"/>
-  <xacro:arg name="device_name" default="left"/>
+  <xacro:arg name="use_mock_hardware" default="false"/>
+  <xacro:arg name="device_name" default="Default Device"/>
 
   <xacro:include filename="$(find touch_description)/ros2_control/touch.ros2_control.xacro"/>
 

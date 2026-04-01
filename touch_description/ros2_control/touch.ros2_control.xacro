@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
-  <xacro:macro name="touch_ros2_control" params="name use_mock_hardware:=^|true device_name:=^|left">
+  <xacro:macro name="touch_ros2_control" params="name use_mock_hardware device_name">
     <ros2_control name="${name}" type="system">
       <hardware>
         <xacro:if value="${use_mock_hardware}">
