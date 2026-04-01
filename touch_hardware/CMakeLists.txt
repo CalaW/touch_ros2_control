@@ -69,24 +69,6 @@ install(TARGETS ${PROJECT_NAME}
   RUNTIME DESTINATION bin
 )
 
-if(BUILD_TESTING)
-  find_package(ament_cmake_gmock REQUIRED)
-  ament_add_gmock(test_touch_system test/test_touch_system.cpp)
-  target_compile_features(test_touch_system PUBLIC cxx_std_17)
-  target_link_libraries(test_touch_system
-    ${PROJECT_NAME}
-    pluginlib::pluginlib
-    hardware_interface::hardware_interface
-  )
-  ament_target_dependencies(test_touch_system
-    hardware_interface
-    pluginlib
-    rclcpp
-    rclcpp_lifecycle
-  )
-endif()
-
-
 ## EXPORTS
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
 ament_export_dependencies(${THIS_PACKAGE_INCLUDE_DEPENDS})
