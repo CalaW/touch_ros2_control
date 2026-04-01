@@ -1,0 +1,48 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="touch">
+  <xacro:arg name="use_mock_hardware" default="true"/>
+  <xacro:arg name="device_name" default="left"/>
+
+  <xacro:include filename="$(find touch_description)/ros2_control/touch.ros2_control.xacro"/>
+
+  <link name="touch_base"/>
+  <link name="touch_x_link"/>
+  <link name="touch_y_link"/>
+  <link name="touch_z_link"/>
+  <link name="stylus_tip"/>
+
+  <joint name="touch_x" type="prismatic">
+    <parent link="touch_base"/>
+    <child link="touch_x_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+    <limit effort="12.0" velocity="2.0" lower="-0.2" upper="0.2"/>
+  </joint>
+
+  <joint name="touch_y" type="prismatic">
+    <parent link="touch_x_link"/>
+    <child link="touch_y_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <limit effort="12.0" velocity="2.0" lower="-0.2" upper="0.2"/>
+  </joint>
+
+  <joint name="touch_z" type="prismatic">
+    <parent link="touch_y_link"/>
+    <child link="touch_z_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit effort="12.0" velocity="2.0" lower="-0.2" upper="0.2"/>
+  </joint>
+
+  <joint name="stylus_tip_joint" type="fixed">
+    <parent link="touch_z_link"/>
+    <child link="stylus_tip"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <xacro:touch_ros2_control
+    name="TouchSystem"
+    use_mock_hardware="$(arg use_mock_hardware)"
+    device_name="$(arg device_name)"/>
+</robot>

@@ -1,0 +1,17 @@
+controller_manager:
+  ros__parameters:
+    update_rate: 250
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    touch_force_controller:
+      type: forward_command_controller/ForwardCommandController
+
+touch_force_controller:
+  ros__parameters:
+    joints:
+      - touch_x
+      - touch_y
+      - touch_z
+    interface_name: effort

@@ -1,0 +1,10 @@
+<library path="touch_hardware">
+  <class
+    name="touch_hardware/TouchSystemHardware"
+    type="touch_hardware::TouchSystemHardware"
+    base_class_type="hardware_interface::SystemInterface">
+    <description>
+      ros2_control hardware plugin for Geomagic Touch devices.
+    </description>
+  </class>
+</library>
