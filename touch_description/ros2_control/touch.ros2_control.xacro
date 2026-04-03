@@ -13,23 +13,99 @@
         </xacro:unless>
       </hardware>
 
-      <joint name="touch_x">
-        <command_interface name="effort"/>
-        <state_interface name="position"/>
-        <state_interface name="velocity"/>
+      <joint name="waist">
+        <state_interface name="position">
+          <param name="initial_value">0.0</param>
+        </state_interface>
+        <state_interface name="velocity">
+          <param name="initial_value">0.0</param>
+        </state_interface>
       </joint>
 
-      <joint name="touch_y">
-        <command_interface name="effort"/>
-        <state_interface name="position"/>
-        <state_interface name="velocity"/>
+      <joint name="shoulder">
+        <state_interface name="position">
+          <param name="initial_value">0.0</param>
+        </state_interface>
+        <state_interface name="velocity">
+          <param name="initial_value">0.0</param>
+        </state_interface>
       </joint>
 
-      <joint name="touch_z">
-        <command_interface name="effort"/>
-        <state_interface name="position"/>
-        <state_interface name="velocity"/>
+      <joint name="elbow">
+        <state_interface name="position">
+          <param name="initial_value">0.0</param>
+        </state_interface>
+        <state_interface name="velocity">
+          <param name="initial_value">0.0</param>
+        </state_interface>
       </joint>
+
+      <joint name="yaw">
+        <state_interface name="position">
+          <param name="initial_value">0.0</param>
+        </state_interface>
+        <state_interface name="velocity">
+          <param name="initial_value">0.0</param>
+        </state_interface>
+      </joint>
+
+      <joint name="pitch">
+        <state_interface name="position">
+          <param name="initial_value">0.0</param>
+        </state_interface>
+        <state_interface name="velocity">
+          <param name="initial_value">0.0</param>
+        </state_interface>
+      </joint>
+
+      <joint name="roll">
+        <state_interface name="position">
+          <param name="initial_value">0.0</param>
+        </state_interface>
+        <state_interface name="velocity">
+          <param name="initial_value">0.0</param>
+        </state_interface>
+      </joint>
+
+      <gpio name="force">
+        <command_interface name="force.x"/>
+        <command_interface name="force.y"/>
+        <command_interface name="force.z"/>
+        <state_interface name="force.x">
+          <param name="initial_value">0.0</param>
+        </state_interface>
+        <state_interface name="force.y">
+          <param name="initial_value">0.0</param>
+        </state_interface>
+        <state_interface name="force.z">
+          <param name="initial_value">0.0</param>
+        </state_interface>
+      </gpio>
+
+      <sensor name="tcp_pose">
+        <state_interface name="position.x">
+          <param name="initial_value">0.0</param>
+        </state_interface>
+        <state_interface name="position.y">
+          <param name="initial_value">0.0</param>
+        </state_interface>
+        <state_interface name="position.z">
+          <param name="initial_value">0.0</param>
+        </state_interface>
+        <state_interface name="orientation.x">
+          <param name="initial_value">0.0</param>
+        </state_interface>
+        <state_interface name="orientation.y">
+          <param name="initial_value">0.0</param>
+        </state_interface>
+        <state_interface name="orientation.z">
+          <param name="initial_value">0.0</param>
+        </state_interface>
+        <state_interface name="orientation.w">
+          <param name="initial_value">1.0</param>
+        </state_interface>
+        <param name="frame_id">touch_tcp</param>
+      </sensor>
     </ros2_control>
   </xacro:macro>
 </robot>

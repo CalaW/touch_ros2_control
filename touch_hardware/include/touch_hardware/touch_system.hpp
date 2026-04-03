@@ -1,6 +1,7 @@
 #ifndef TOUCH_HARDWARE__TOUCH_SYSTEM_HPP_
 #define TOUCH_HARDWARE__TOUCH_SYSTEM_HPP_
 
+#include <array>
 #include <memory>
 #include <string>
 #include <vector>
@@ -52,6 +53,8 @@ private:
 
   std::string device_name_;
   std::vector<std::string> joint_names_;
+  std::array<double, 6> previous_joint_positions_{};
+  bool previous_joint_positions_valid_{false};
   bool configured_{false};
   bool active_{false};
 

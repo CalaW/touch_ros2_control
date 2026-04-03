@@ -60,6 +60,13 @@ def generate_launch_description():
         output="both",
     )
 
+    pose_broadcaster_spawner = Node(
+        package="controller_manager",
+        executable="spawner",
+        arguments=["touch_pose_broadcaster"],
+        output="both",
+    )
+
     return LaunchDescription(
         [
             DeclareLaunchArgument("use_mock_hardware", default_value="false"),
@@ -68,5 +75,6 @@ def generate_launch_description():
             robot_state_publisher_node,
             joint_state_broadcaster_spawner,
             force_controller_spawner,
+            pose_broadcaster_spawner,
         ]
     )

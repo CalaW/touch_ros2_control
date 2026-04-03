@@ -1,0 +1,6 @@
+{
+    "github.copilot.chat.codeGeneration.useInstructionFiles": true,
+    "urdf-visualizer.packages": {
+        "touch_description": "touch_description"
+    }
+}

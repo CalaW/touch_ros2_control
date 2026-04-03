@@ -28,9 +28,15 @@ def test_urdf_xacro():
       with open(tmp_urdf_output_file, "r", encoding="utf-8") as urdf_file:
           urdf_text = urdf_file.read()
 
-      assert 'joint name="touch_x"' in urdf_text
-      assert 'joint name="touch_y"' in urdf_text
-      assert 'joint name="touch_z"' in urdf_text
+      assert 'joint name="waist"' in urdf_text
+      assert 'joint name="shoulder"' in urdf_text
+      assert 'joint name="elbow"' in urdf_text
+      assert 'joint name="yaw"' in urdf_text
+      assert 'joint name="pitch"' in urdf_text
+      assert 'joint name="roll"' in urdf_text
+      assert 'link name="touch_tcp"' in urdf_text
+      assert 'sensor name="tcp_pose"' in urdf_text
+      assert 'gpio name="force"' in urdf_text
       assert "mock_components/GenericSystem" in urdf_text
 
       check_urdf_process = subprocess.run(

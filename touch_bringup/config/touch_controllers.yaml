@@ -6,12 +6,25 @@ controller_manager:
       type: joint_state_broadcaster/JointStateBroadcaster
 
     touch_force_controller:
-      type: forward_command_controller/ForwardCommandController
+      type: gpio_controllers/GpioCommandController
+
+    touch_pose_broadcaster:
+      type: pose_broadcaster/PoseBroadcaster
 
 touch_force_controller:
   ros__parameters:
-    joints:
-      - touch_x
-      - touch_y
-      - touch_z
-    interface_name: effort
+    gpios:
+      - force
+    command_interfaces:
+      force:
+        - interfaces:
+          - force.x
+          - force.y
+          - force.z
+
+touch_pose_broadcaster:
+  ros__parameters:
+    pose_name: tcp_pose
+    frame_id: touch_base
+    tf.enable: true
+    tf.child_frame_id: touch_tcp

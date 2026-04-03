@@ -27,11 +27,16 @@ struct RawSnapshot
 {
   std::array<double, 3> position_mm{0.0, 0.0, 0.0};
   std::array<double, 3> velocity_mm_s{0.0, 0.0, 0.0};
+  std::array<double, 16> transform{};
+  std::array<double, 6> joint_angles{};
 };
 
 using Vec3 = std::array<double, 3>;
+using Quat = std::array<double, 4>;
 
 constexpr double kMillimetersToMeters = 1e-3;
+constexpr const char * kForceGroupName = "force";
+constexpr const char * kPoseName = "tcp_pose";
 
 Vec3 raw_to_ros(const Vec3 & raw)
 {
@@ -43,6 +48,92 @@ Vec3 raw_to_ros(const Vec3 & raw)
 Vec3 ros_to_raw(const Vec3 & ros)
 {
   return {-ros[1], ros[2], ros[0]};
+}
+
+Quat rotation_matrix_to_quaternion(const double r[3][3])
+{
+  Quat q{0.0, 0.0, 0.0, 1.0};
+  const double trace = r[0][0] + r[1][1] + r[2][2];
+
+  if (trace > 0.0)
+  {
+    const double s = 0.5 / std::sqrt(trace + 1.0);
+    q[3] = 0.25 / s;
+    q[0] = (r[2][1] - r[1][2]) * s;
+    q[1] = (r[0][2] - r[2][0]) * s;
+    q[2] = (r[1][0] - r[0][1]) * s;
+    return q;
+  }
+
+  if (r[0][0] > r[1][1] && r[0][0] > r[2][2])
+  {
+    const double s = 2.0 * std::sqrt(1.0 + r[0][0] - r[1][1] - r[2][2]);
+    q[3] = (r[2][1] - r[1][2]) / s;
+    q[0] = 0.25 * s;
+    q[1] = (r[0][1] + r[1][0]) / s;
+    q[2] = (r[0][2] + r[2][0]) / s;
+    return q;
+  }
+
+  if (r[1][1] > r[2][2])
+  {
+    const double s = 2.0 * std::sqrt(1.0 + r[1][1] - r[0][0] - r[2][2]);
+    q[3] = (r[0][2] - r[2][0]) / s;
+    q[0] = (r[0][1] + r[1][0]) / s;
+    q[1] = 0.25 * s;
+    q[2] = (r[1][2] + r[2][1]) / s;
+    return q;
+  }
+
+  const double s = 2.0 * std::sqrt(1.0 + r[2][2] - r[0][0] - r[1][1]);
+  q[3] = (r[1][0] - r[0][1]) / s;
+  q[0] = (r[0][2] + r[2][0]) / s;
+  q[1] = (r[1][2] + r[2][1]) / s;
+  q[2] = 0.25 * s;
+  return q;
+}
+
+void raw_transform_to_ros_pose(const std::array<double, 16> & transform, Vec3 & position, Quat & orientation)
+{
+  const double basis[3][3] = {
+    {0.0, 0.0, 1.0},
+    {-1.0, 0.0, 0.0},
+    {0.0, 1.0, 0.0},
+  };
+
+  const double r_raw[3][3] = {
+    {transform[0], transform[1], transform[2]},
+    {transform[4], transform[5], transform[6]},
+    {transform[8], transform[9], transform[10]},
+  };
+
+  position = raw_to_ros({transform[12], transform[13], transform[14]});
+
+  double tmp[3][3] = {};
+  double r_ros[3][3] = {};
+  for (size_t i = 0; i < 3; ++i)
+  {
+    for (size_t j = 0; j < 3; ++j)
+    {
+      for (size_t k = 0; k < 3; ++k)
+      {
+        tmp[i][j] += basis[i][k] * r_raw[k][j];
+      }
+    }
+  }
+
+  for (size_t i = 0; i < 3; ++i)
+  {
+    for (size_t j = 0; j < 3; ++j)
+    {
+      for (size_t k = 0; k < 3; ++k)
+      {
+        r_ros[i][j] += tmp[i][k] * basis[j][k];
+      }
+    }
+  }
+
+  orientation = rotation_matrix_to_quaternion(r_ros);
 }
 
 void throw_on_hd_error(const std::string & message)
@@ -155,6 +246,19 @@ private:
     RawSnapshot local_snapshot;
     hdGetDoublev(HD_CURRENT_POSITION, local_snapshot.position_mm.data());
     hdGetDoublev(HD_CURRENT_VELOCITY, local_snapshot.velocity_mm_s.data());
+    hdGetDoublev(HD_CURRENT_TRANSFORM, local_snapshot.transform.data());
+
+    std::array<double, 3> arm_joint_angles{};
+    std::array<double, 3> gimbal_angles{};
+    hdGetDoublev(HD_CURRENT_JOINT_ANGLES, arm_joint_angles.data());
+    hdGetDoublev(HD_CURRENT_GIMBAL_ANGLES, gimbal_angles.data());
+
+    local_snapshot.joint_angles[0] = arm_joint_angles[0];
+    local_snapshot.joint_angles[1] = arm_joint_angles[1];
+    local_snapshot.joint_angles[2] = arm_joint_angles[2] - arm_joint_angles[1];
+    local_snapshot.joint_angles[3] = gimbal_angles[0];
+    local_snapshot.joint_angles[4] = gimbal_angles[1];
+    local_snapshot.joint_angles[5] = gimbal_angles[2];
 
     Vec3 local_force_command{0.0, 0.0, 0.0};
     {
@@ -223,13 +327,14 @@ hardware_interface::CallbackReturn TouchSystemHardware::on_init(
 
 bool TouchSystemHardware::validate_hardware_info_() const
 {
-  if (info_.joints.size() != 3)
+  if (info_.joints.size() != 6)
   {
-    RCLCPP_ERROR(get_logger(), "Expected exactly 3 joints, got %zu.", info_.joints.size());
+    RCLCPP_ERROR(get_logger(), "Expected exactly 6 joints, got %zu.", info_.joints.size());
     return false;
   }
 
-  const std::array<std::string, 3> expected_joint_names{"touch_x", "touch_y", "touch_z"};
+  const std::array<std::string, 6> expected_joint_names{
+    "waist", "shoulder", "elbow", "yaw", "pitch", "roll"};
   for (size_t i = 0; i < info_.joints.size(); ++i)
   {
     const auto & joint = info_.joints[i];
@@ -238,21 +343,6 @@ bool TouchSystemHardware::validate_hardware_info_() const
       RCLCPP_ERROR(
         get_logger(), "Joint %zu must be named '%s', got '%s'.", i,
         expected_joint_names[i].c_str(), joint.name.c_str());
-      return false;
-    }
-
-    if (joint.command_interfaces.size() != 1)
-    {
-      RCLCPP_ERROR(
-        get_logger(), "Joint '%s' must expose exactly 1 command interface.", joint.name.c_str());
-      return false;
-    }
-
-    if (joint.command_interfaces[0].name != hardware_interface::HW_IF_EFFORT)
-    {
-      RCLCPP_ERROR(
-        get_logger(), "Joint '%s' command interface must be '%s'.", joint.name.c_str(),
-        hardware_interface::HW_IF_EFFORT);
       return false;
     }
 
@@ -273,6 +363,56 @@ bool TouchSystemHardware::validate_hardware_info_() const
     }
   }
 
+  if (info_.gpios.size() != 1 || info_.gpios[0].name != kForceGroupName)
+  {
+    RCLCPP_ERROR(get_logger(), "Expected one gpio named '%s'.", kForceGroupName);
+    return false;
+  }
+
+  const auto & force_gpio = info_.gpios[0];
+  const std::array<std::string, 3> expected_force_interfaces{"force.x", "force.y", "force.z"};
+  if (force_gpio.command_interfaces.size() != expected_force_interfaces.size())
+  {
+    RCLCPP_ERROR(get_logger(), "Force gpio must expose 3 command interfaces.");
+    return false;
+  }
+  for (size_t i = 0; i < expected_force_interfaces.size(); ++i)
+  {
+    if (force_gpio.command_interfaces[i].name != expected_force_interfaces[i])
+    {
+      RCLCPP_ERROR(
+        get_logger(), "Force command interface %zu must be '%s', got '%s'.", i,
+        expected_force_interfaces[i].c_str(), force_gpio.command_interfaces[i].name.c_str());
+      return false;
+    }
+  }
+
+  if (info_.sensors.size() != 1 || info_.sensors[0].name != kPoseName)
+  {
+    RCLCPP_ERROR(get_logger(), "Expected one sensor named '%s'.", kPoseName);
+    return false;
+  }
+
+  const auto & pose_sensor = info_.sensors[0];
+  const std::array<std::string, 7> expected_pose_interfaces{
+    "position.x", "position.y", "position.z",
+    "orientation.x", "orientation.y", "orientation.z", "orientation.w"};
+  if (pose_sensor.state_interfaces.size() != expected_pose_interfaces.size())
+  {
+    RCLCPP_ERROR(get_logger(), "TCP pose sensor must expose 7 state interfaces.");
+    return false;
+  }
+  for (size_t i = 0; i < expected_pose_interfaces.size(); ++i)
+  {
+    if (pose_sensor.state_interfaces[i].name != expected_pose_interfaces[i])
+    {
+      RCLCPP_ERROR(
+        get_logger(), "TCP pose interface %zu must be '%s', got '%s'.", i,
+        expected_pose_interfaces[i].c_str(), pose_sensor.state_interfaces[i].name.c_str());
+      return false;
+    }
+  }
+
   return true;
 }
 
@@ -289,8 +429,16 @@ hardware_interface::CallbackReturn TouchSystemHardware::on_configure(
     {
       set_state(joint_name + "/" + hardware_interface::HW_IF_POSITION, 0.0);
       set_state(joint_name + "/" + hardware_interface::HW_IF_VELOCITY, 0.0);
-      set_command(joint_name + "/" + hardware_interface::HW_IF_EFFORT, 0.0);
     }
+    set_state(std::string(kPoseName) + "/position.x", 0.0);
+    set_state(std::string(kPoseName) + "/position.y", 0.0);
+    set_state(std::string(kPoseName) + "/position.z", 0.0);
+    set_state(std::string(kPoseName) + "/orientation.x", 0.0);
+    set_state(std::string(kPoseName) + "/orientation.y", 0.0);
+    set_state(std::string(kPoseName) + "/orientation.z", 0.0);
+    set_state(std::string(kPoseName) + "/orientation.w", 1.0);
+    previous_joint_positions_.fill(0.0);
+    previous_joint_positions_valid_ = false;
     return hardware_interface::CallbackReturn::SUCCESS;
   }
   catch (const std::exception & e)
@@ -358,7 +506,7 @@ hardware_interface::CallbackReturn TouchSystemHardware::on_error(
 
 hardware_interface::return_type TouchSystemHardware::read(
   const rclcpp::Time & /*time*/,
-  const rclcpp::Duration & /*period*/)
+  const rclcpp::Duration & period)
 {
   if (!configured_ || !impl_)
   {
@@ -366,18 +514,36 @@ hardware_interface::return_type TouchSystemHardware::read(
   }
 
   const RawSnapshot snapshot = impl_->snapshot();
-  const Vec3 ros_position_m = raw_to_ros(snapshot.position_mm);
-  const Vec3 ros_velocity_m_s = raw_to_ros(snapshot.velocity_mm_s);
+  std::array<double, 6> current_joint_positions = snapshot.joint_angles;
+  std::array<double, 6> current_joint_velocities{};
+  if (previous_joint_positions_valid_ && period.seconds() > 0.0)
+  {
+    for (size_t i = 0; i < current_joint_positions.size(); ++i)
+    {
+      current_joint_velocities[i] =
+        (current_joint_positions[i] - previous_joint_positions_[i]) / period.seconds();
+    }
+  }
+
+  previous_joint_positions_ = current_joint_positions;
+  previous_joint_positions_valid_ = true;
 
   for (size_t i = 0; i < joint_names_.size(); ++i)
   {
-    set_state(
-      joint_names_[i] + "/" + hardware_interface::HW_IF_POSITION,
-      ros_position_m[i] * kMillimetersToMeters);
-    set_state(
-      joint_names_[i] + "/" + hardware_interface::HW_IF_VELOCITY,
-      ros_velocity_m_s[i] * kMillimetersToMeters);
+    set_state(joint_names_[i] + "/" + hardware_interface::HW_IF_POSITION, current_joint_positions[i]);
+    set_state(joint_names_[i] + "/" + hardware_interface::HW_IF_VELOCITY, current_joint_velocities[i]);
   }
+
+  Vec3 ros_position_mm{};
+  Quat ros_orientation{};
+  raw_transform_to_ros_pose(snapshot.transform, ros_position_mm, ros_orientation);
+  set_state(std::string(kPoseName) + "/position.x", ros_position_mm[0] * kMillimetersToMeters);
+  set_state(std::string(kPoseName) + "/position.y", ros_position_mm[1] * kMillimetersToMeters);
+  set_state(std::string(kPoseName) + "/position.z", ros_position_mm[2] * kMillimetersToMeters);
+  set_state(std::string(kPoseName) + "/orientation.x", ros_orientation[0]);
+  set_state(std::string(kPoseName) + "/orientation.y", ros_orientation[1]);
+  set_state(std::string(kPoseName) + "/orientation.z", ros_orientation[2]);
+  set_state(std::string(kPoseName) + "/orientation.w", ros_orientation[3]);
 
   return hardware_interface::return_type::OK;
 }
@@ -392,9 +558,9 @@ hardware_interface::return_type TouchSystemHardware::write(
   }
 
   Vec3 ros_force{
-    get_command(joint_names_[0] + "/" + hardware_interface::HW_IF_EFFORT),
-    get_command(joint_names_[1] + "/" + hardware_interface::HW_IF_EFFORT),
-    get_command(joint_names_[2] + "/" + hardware_interface::HW_IF_EFFORT),
+    get_command(std::string(kForceGroupName) + "/force.x"),
+    get_command(std::string(kForceGroupName) + "/force.y"),
+    get_command(std::string(kForceGroupName) + "/force.z"),
   };
 
   for (double & value : ros_force)
@@ -410,16 +576,21 @@ hardware_interface::return_type TouchSystemHardware::write(
     ros_force = {0.0, 0.0, 0.0};
   }
 
+  set_state(std::string(kForceGroupName) + "/force.x", ros_force[0]);
+  set_state(std::string(kForceGroupName) + "/force.y", ros_force[1]);
+  set_state(std::string(kForceGroupName) + "/force.z", ros_force[2]);
   impl_->set_force_command(ros_to_raw(ros_force));
   return hardware_interface::return_type::OK;
 }
 
 void TouchSystemHardware::set_zero_command_()
 {
-  for (const auto & joint_name : joint_names_)
-  {
-    set_command(joint_name + "/" + hardware_interface::HW_IF_EFFORT, 0.0);
-  }
+  set_command(std::string(kForceGroupName) + "/force.x", 0.0);
+  set_command(std::string(kForceGroupName) + "/force.y", 0.0);
+  set_command(std::string(kForceGroupName) + "/force.z", 0.0);
+  set_state(std::string(kForceGroupName) + "/force.x", 0.0);
+  set_state(std::string(kForceGroupName) + "/force.y", 0.0);
+  set_state(std::string(kForceGroupName) + "/force.z", 0.0);
 
   if (impl_)
   {
@@ -436,6 +607,7 @@ hardware_interface::CallbackReturn TouchSystemHardware::cleanup_device_()
   }
   configured_ = false;
   active_ = false;
+  previous_joint_positions_valid_ = false;
   return hardware_interface::CallbackReturn::SUCCESS;
 }
 

@@ -50,11 +50,14 @@ class TestFixture(unittest.TestCase):
 
     def test_controller_running(self, proc_output):
         check_controllers_running(
-            self.node, ["joint_state_broadcaster", "touch_force_controller"]
+            self.node,
+            ["joint_state_broadcaster", "touch_force_controller", "touch_pose_broadcaster"],
         )
 
     def test_joint_state_published(self):
-        check_if_js_published("/joint_states", ["touch_x", "touch_y", "touch_z"])
+        check_if_js_published(
+            "/joint_states", ["waist", "shoulder", "elbow", "yaw", "pitch", "roll"]
+        )
 
 
 @launch_testing.post_shutdown_test()
