@@ -1,15 +1,15 @@
 #ifndef TOUCH_HARDWARE__TOUCH_SYSTEM_HPP_
 #define TOUCH_HARDWARE__TOUCH_SYSTEM_HPP_
 
-#include <array>
-#include <memory>
-#include <string>
-#include <vector>
-
 #include "hardware_interface/system_interface.hpp"
 #include "hardware_interface/types/hardware_interface_return_values.hpp"
 #include "rclcpp/macros.hpp"
 #include "rclcpp_lifecycle/state.hpp"
+
+#include <array>
+#include <memory>
+#include <string>
+#include <vector>
 
 namespace touch_hardware
 {
