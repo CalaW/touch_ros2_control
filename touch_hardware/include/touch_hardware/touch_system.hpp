@@ -58,8 +58,8 @@ private:
   bool configured_{false};
   bool active_{false};
 
-  class Impl;
-  std::unique_ptr<Impl> impl_;
+  class TouchDevice;
+  std::unique_ptr<TouchDevice> touch_device_;
 };
 
 }  // namespace touch_hardware

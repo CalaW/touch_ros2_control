@@ -15,7 +15,7 @@
 
 #include "hardware_interface/types/hardware_interface_type_values.hpp"
 #include "pluginlib/class_list_macros.hpp"
-#include "rclcpp/rclcpp.hpp"
+#include <Eigen/Geometry>
 
 namespace touch_hardware
 {
@@ -25,7 +25,6 @@ namespace
 
 struct RawSnapshot
 {
-  std::array<double, 3> position_mm{0.0, 0.0, 0.0};
   std::array<double, 3> velocity_mm_s{0.0, 0.0, 0.0};
   std::array<double, 16> transform{};
   std::array<double, 6> joint_angles{};
@@ -38,102 +37,42 @@ constexpr double kMillimetersToMeters = 1e-3;
 constexpr const char * kForceGroupName = "force";
 constexpr const char * kPoseName = "tcp_pose";
 
-Vec3 raw_to_ros(const Vec3 & raw)
+const Eigen::Matrix3d& raw_to_ros_basis()
 {
-  // Device frame: +X right, +Y up, +Z toward user
-  // ROS frame:    +X forward, +Y left, +Z up
-  return {raw[2], -raw[0], raw[1]};
+  static const Eigen::Matrix3d B = (Eigen::Matrix3d() <<
+    0.0, 0.0, 1.0,
+    1.0, 0.0, 0.0,
+    0.0, 1.0, 0.0
+  ).finished();
+  return B;
 }
 
-Vec3 ros_to_raw(const Vec3 & ros)
+void raw_transform_to_ros_pose(
+  const std::array<double, 16> & transform, Vec3 & position, Quat & orientation)
 {
-  return {-ros[1], ros[2], ros[0]};
+  static const Eigen::Matrix3d basis = raw_to_ros_basis();
+
+  Eigen::Vector3d raw_position(transform[12], transform[13], transform[14]);
+  Eigen::Vector3d ros_position = basis * raw_position;
+
+  Eigen::Matrix3d r_raw;
+  r_raw <<
+    transform[0], transform[1], transform[2],
+    transform[4], transform[5], transform[6],
+    transform[8], transform[9], transform[10];
+  const Eigen::Matrix3d r_ros = basis * r_raw.transpose() * basis.transpose();
+  Eigen::Quaterniond q_ros(r_ros);
+  q_ros.normalize();
+
+  position = {ros_position.x(), ros_position.y(), ros_position.z()};
+  orientation = {q_ros.x(), q_ros.y(), q_ros.z(), q_ros.w()};
 }
 
-Quat rotation_matrix_to_quaternion(const double r[3][3])
+Vec3 force_ros_to_raw(const Vec3& force_ros)
 {
-  Quat q{0.0, 0.0, 0.0, 1.0};
-  const double trace = r[0][0] + r[1][1] + r[2][2];
-
-  if (trace > 0.0)
-  {
-    const double s = 0.5 / std::sqrt(trace + 1.0);
-    q[3] = 0.25 / s;
-    q[0] = (r[2][1] - r[1][2]) * s;
-    q[1] = (r[0][2] - r[2][0]) * s;
-    q[2] = (r[1][0] - r[0][1]) * s;
-    return q;
-  }
-
-  if (r[0][0] > r[1][1] && r[0][0] > r[2][2])
-  {
-    const double s = 2.0 * std::sqrt(1.0 + r[0][0] - r[1][1] - r[2][2]);
-    q[3] = (r[2][1] - r[1][2]) / s;
-    q[0] = 0.25 * s;
-    q[1] = (r[0][1] + r[1][0]) / s;
-    q[2] = (r[0][2] + r[2][0]) / s;
-    return q;
-  }
-
-  if (r[1][1] > r[2][2])
-  {
-    const double s = 2.0 * std::sqrt(1.0 + r[1][1] - r[0][0] - r[2][2]);
-    q[3] = (r[0][2] - r[2][0]) / s;
-    q[0] = (r[0][1] + r[1][0]) / s;
-    q[1] = 0.25 * s;
-    q[2] = (r[1][2] + r[2][1]) / s;
-    return q;
-  }
-
-  const double s = 2.0 * std::sqrt(1.0 + r[2][2] - r[0][0] - r[1][1]);
-  q[3] = (r[1][0] - r[0][1]) / s;
-  q[0] = (r[0][2] + r[2][0]) / s;
-  q[1] = (r[1][2] + r[2][1]) / s;
-  q[2] = 0.25 * s;
-  return q;
-}
-
-void raw_transform_to_ros_pose(const std::array<double, 16> & transform, Vec3 & position, Quat & orientation)
-{
-  const double basis[3][3] = {
-    {0.0, 0.0, 1.0},
-    {-1.0, 0.0, 0.0},
-    {0.0, 1.0, 0.0},
-  };
-
-  const double r_raw[3][3] = {
-    {transform[0], transform[1], transform[2]},
-    {transform[4], transform[5], transform[6]},
-    {transform[8], transform[9], transform[10]},
-  };
-
-  position = raw_to_ros({transform[12], transform[13], transform[14]});
-
-  double tmp[3][3] = {};
-  double r_ros[3][3] = {};
-  for (size_t i = 0; i < 3; ++i)
-  {
-    for (size_t j = 0; j < 3; ++j)
-    {
-      for (size_t k = 0; k < 3; ++k)
-      {
-        tmp[i][j] += basis[i][k] * r_raw[k][j];
-      }
-    }
-  }
-
-  for (size_t i = 0; i < 3; ++i)
-  {
-    for (size_t j = 0; j < 3; ++j)
-    {
-      for (size_t k = 0; k < 3; ++k)
-      {
-        r_ros[i][j] += tmp[i][k] * basis[j][k];
-      }
-    }
-  }
-
-  orientation = rotation_matrix_to_quaternion(r_ros);
+  const Eigen::Vector3d f_ros(force_ros[0], force_ros[1], force_ros[2]);
+  const Eigen::Vector3d f_raw = raw_to_ros_basis().transpose() * f_ros;
+  return {f_raw.x(), f_raw.y(), f_raw.z()};
 }
 
 void throw_on_hd_error(const std::string & message)
@@ -147,7 +86,7 @@ void throw_on_hd_error(const std::string & message)
 
 }  // namespace
 
-class TouchSystemHardware::Impl
+class TouchSystemHardware::TouchDevice
 {
 public:
   void open(const std::string & device_name)
@@ -194,7 +133,7 @@ public:
     }
 
     callback_handle_ = hdScheduleAsynchronous(
-      &Impl::scheduler_callback, this, HD_DEFAULT_SCHEDULER_PRIORITY);
+      &TouchDevice::scheduler_callback, this, HD_DEFAULT_SCHEDULER_PRIORITY);
     throw_on_hd_error("Failed to schedule device callback");
 
     hdStartScheduler();
@@ -239,12 +178,11 @@ public:
 private:
   static HDCallbackCode HDCALLBACK scheduler_callback(void * data)
   {
-    auto * self = static_cast<Impl *>(data);
+    auto * self = static_cast<TouchDevice *>(data);
 
     hdBeginFrame(hdGetCurrentDevice());
 
     RawSnapshot local_snapshot;
-    hdGetDoublev(HD_CURRENT_POSITION, local_snapshot.position_mm.data());
     hdGetDoublev(HD_CURRENT_VELOCITY, local_snapshot.velocity_mm_s.data());
     hdGetDoublev(HD_CURRENT_TRANSFORM, local_snapshot.transform.data());
 
@@ -321,7 +259,7 @@ hardware_interface::CallbackReturn TouchSystemHardware::on_init(
     joint_names_.push_back(joint.name);
   }
 
-  impl_ = std::make_unique<Impl>();
+  touch_device_ = std::make_unique<TouchDevice>();
   return hardware_interface::CallbackReturn::SUCCESS;
 }
 
@@ -421,7 +359,7 @@ hardware_interface::CallbackReturn TouchSystemHardware::on_configure(
 {
   try
   {
-    impl_->open(device_name_);
+    touch_device_->open(device_name_);
     configured_ = true;
     active_ = false;
     set_zero_command_();
@@ -473,7 +411,7 @@ hardware_interface::CallbackReturn TouchSystemHardware::on_activate(
   try
   {
     set_zero_command_();
-    impl_->start();
+    touch_device_->start();
     active_ = true;
     return hardware_interface::CallbackReturn::SUCCESS;
   }
@@ -489,9 +427,9 @@ hardware_interface::CallbackReturn TouchSystemHardware::on_deactivate(
   const rclcpp_lifecycle::State & /*previous_state*/)
 {
   set_zero_command_();
-  if (impl_)
+  if (touch_device_)
   {
-    impl_->stop();
+    touch_device_->stop();
   }
   active_ = false;
   return hardware_interface::CallbackReturn::SUCCESS;
@@ -508,12 +446,12 @@ hardware_interface::return_type TouchSystemHardware::read(
   const rclcpp::Time & /*time*/,
   const rclcpp::Duration & period)
 {
-  if (!configured_ || !impl_)
+  if (!configured_ || !touch_device_)
   {
     return hardware_interface::return_type::OK;
   }
 
-  const RawSnapshot snapshot = impl_->snapshot();
+  const RawSnapshot snapshot = touch_device_->snapshot();
   std::array<double, 6> current_joint_positions = snapshot.joint_angles;
   std::array<double, 6> current_joint_velocities{};
   if (previous_joint_positions_valid_ && period.seconds() > 0.0)
@@ -552,7 +490,7 @@ hardware_interface::return_type TouchSystemHardware::write(
   const rclcpp::Time & /*time*/,
   const rclcpp::Duration & /*period*/)
 {
-  if (!configured_ || !impl_)
+  if (!configured_ || !touch_device_)
   {
     return hardware_interface::return_type::OK;
   }
@@ -579,7 +517,7 @@ hardware_interface::return_type TouchSystemHardware::write(
   set_state(std::string(kForceGroupName) + "/force.x", ros_force[0]);
   set_state(std::string(kForceGroupName) + "/force.y", ros_force[1]);
   set_state(std::string(kForceGroupName) + "/force.z", ros_force[2]);
-  impl_->set_force_command(ros_to_raw(ros_force));
+  touch_device_->set_force_command(force_ros_to_raw(ros_force));
   return hardware_interface::return_type::OK;
 }
 
@@ -592,18 +530,18 @@ void TouchSystemHardware::set_zero_command_()
   set_state(std::string(kForceGroupName) + "/force.y", 0.0);
   set_state(std::string(kForceGroupName) + "/force.z", 0.0);
 
-  if (impl_)
+  if (touch_device_)
   {
-    impl_->set_force_command({0.0, 0.0, 0.0});
+    touch_device_->set_force_command({0.0, 0.0, 0.0});
   }
 }
 
 hardware_interface::CallbackReturn TouchSystemHardware::cleanup_device_()
 {
-  if (impl_)
+  if (touch_device_)
   {
-    impl_->set_force_command({0.0, 0.0, 0.0});
-    impl_->close();
+    touch_device_->set_force_command({0.0, 0.0, 0.0});
+    touch_device_->close();
   }
   configured_ = false;
   active_ = false;
