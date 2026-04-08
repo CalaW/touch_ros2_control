@@ -27,7 +27,7 @@
 
   <link name="torso">
     <visual>
-      <origin xyz="0 0 0.036" rpy="-1.5707 0 0"/>
+      <origin xyz="0 0 0.036" rpy="-1.57079633 0 0"/>
       <geometry>
         <mesh filename="package://touch_description/meshes/torso.stl"/>
       </geometry>
@@ -47,7 +47,7 @@
 
   <link name="lower_arm">
     <visual>
-      <origin xyz="0 0 0" rpy="1.5707 0 0"/>
+      <origin xyz="0 0 0" rpy="1.57079633 0 0"/>
       <geometry>
         <mesh filename="package://touch_description/meshes/lower_arm.stl"/>
       </geometry>
@@ -57,7 +57,7 @@
 
   <link name="wrist">
     <visual>
-      <origin xyz="0 0 0" rpy="3.14159 0 0"/>
+      <origin xyz="0 0 0" rpy="3.14159265 0 0"/>
       <geometry>
         <mesh filename="package://touch_description/meshes/wrist.stl"/>
       </geometry>
@@ -67,7 +67,7 @@
 
   <link name="tip">
     <visual>
-      <origin xyz="0 0 0" rpy="-1.5707 0 0"/>
+      <origin xyz="0 0 0" rpy="-1.57079633 0 0"/>
       <geometry>
         <mesh filename="package://touch_description/meshes/tip.stl"/>
       </geometry>
@@ -77,7 +77,7 @@
 
   <link name="stylus">
     <visual>
-      <origin xyz="0 -0.039 0" rpy="1.5707 1.5707 0"/>
+      <origin xyz="0 0 0" rpy="1.57079633 1.57079633 0"/>
       <geometry>
         <mesh filename="package://touch_description/meshes/stylus.stl"/>
       </geometry>
@@ -85,14 +85,12 @@
     </visual>
   </link>
 
-  <link name="touch_tcp"/>
-
   <joint name="waist" type="revolute">
     <parent link="touch_base"/>
     <child link="torso"/>
     <origin xyz="0 0 0.09" rpy="0 0 0"/>
-    <axis xyz="0 0 1"/>
-    <limit lower="-0.98" upper="0.98" velocity="100" effort="5"/>
+    <axis xyz="0 0 -1"/>
+    <limit lower="-0.95" upper="0.95" velocity="100" effort="5"/>
   </joint>
 
   <joint name="shoulder" type="revolute">
@@ -106,39 +104,48 @@
   <joint name="elbow" type="revolute">
     <parent link="upper_arm"/>
     <child link="lower_arm"/>
-    <origin xyz="0.0075 0.134 0" rpy="-1.5 0 0"/>
+    <origin xyz="0.0075 0.13335 0" rpy="-1.57079633 0 0"/>
+    <!-- TODO verify origin rotation 1.5 or pi/2 -->
     <axis xyz="1 0 0"/>
-    <limit lower="-0.81" upper="1.25" velocity="100" effort="5"/>
+    <limit lower="-0.78" upper="1.18" velocity="100" effort="5"/>
   </joint>
 
   <joint name="yaw" type="revolute">
     <parent link="lower_arm"/>
     <child link="wrist"/>
     <origin xyz="0 0.08 0" rpy="0 0 0"/>
-    <axis xyz="0 1 0"/>
-    <limit lower="3.92" upper="8.83" velocity="100" effort="5"/>
+    <axis xyz="0 -1 0"/>
+    <limit lower="-2.5" upper="2.5" velocity="100" effort="5"/>
   </joint>
 
   <joint name="pitch" type="revolute">
     <parent link="wrist"/>
     <child link="tip"/>
-    <origin xyz="0 0.0525 0" rpy="1.5707 0 0"/>
+    <origin xyz="0 0.05335 0" rpy="1.57079633 0 0"/>
     <axis xyz="1 0 0"/>
-    <limit lower="-0.5" upper="1.75" velocity="100" effort="5"/>
+    <limit lower="-1.42" upper="1.03" velocity="100" effort="5"/>
   </joint>
 
   <joint name="roll" type="revolute">
     <parent link="tip"/>
     <child link="stylus"/>
-    <origin xyz="0 -0.029 0" rpy="3.14159 3.14159 0"/>
+    <origin xyz="0 0.01 0" rpy="3.14159265 3.14159265 0"/>
     <axis xyz="0 1 0"/>
-    <limit lower="-2.58" upper="2.58" velocity="100" effort="5"/>
+    <limit lower="-2.6" upper="2.6" velocity="100" effort="5"/>
   </joint>
 
+  <link name="HIP"/>
+  <link name="tcp"/>
+
+  <joint name="HIP_joint" type="fixed">
+    <parent link="stylus"/>
+    <child link="HIP"/>
+    <origin xyz="0 0.01 0" rpy="0 0 0"/>
+  </joint>
   <joint name="tcp_joint" type="fixed">
-    <parent link="tip"/>
-    <child link="touch_tcp"/>
-    <origin xyz="0 0.031 0" rpy="0 0 0"/>
+    <parent link="HIP"/>
+    <child link="tcp"/>
+    <origin xyz="0 0.038 0" rpy="0 0 0"/>
   </joint>
 
   <xacro:touch_ros2_control
