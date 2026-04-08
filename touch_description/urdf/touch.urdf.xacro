@@ -17,7 +17,7 @@
 
   <link name="touch_base">
     <visual>
-      <origin xyz="0 -0.02 0"/>
+      <origin xyz="-0.02 0 0" rpy="0 0 -1.57079633"/>
       <geometry>
         <mesh filename="package://touch_description/meshes/base.stl"/>
       </geometry>
@@ -88,7 +88,7 @@
   <joint name="waist" type="revolute">
     <parent link="touch_base"/>
     <child link="torso"/>
-    <origin xyz="0 0 0.09" rpy="0 0 0"/>
+    <origin xyz="0 0 0.09" rpy="0 0 -1.57079633"/>
     <axis xyz="0 0 -1"/>
     <limit lower="-0.95" upper="0.95" velocity="100" effort="5"/>
   </joint>
@@ -105,7 +105,6 @@
     <parent link="upper_arm"/>
     <child link="lower_arm"/>
     <origin xyz="0.0075 0.13335 0" rpy="-1.57079633 0 0"/>
-    <!-- TODO verify origin rotation 1.5 or pi/2 -->
     <axis xyz="1 0 0"/>
     <limit lower="-0.78" upper="1.18" velocity="100" effort="5"/>
   </joint>
