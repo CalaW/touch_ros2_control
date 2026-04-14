@@ -14,7 +14,6 @@
 #include <array>
 #include <cmath>
 #include <memory>
-#include <mutex>
 #include <stdexcept>
 #include <string>
 
@@ -123,17 +122,14 @@ public:
     hdMakeCurrentDevice(handle_);
     throw_on_hd_error("Failed to make device current");
 
-    if (!hdIsEnabled(HD_FORCE_OUTPUT)) {
-      hdEnable(HD_FORCE_OUTPUT);
-      throw_on_hd_error("Failed to enable force output");
-    }
-
     callback_handle_ =
       hdScheduleAsynchronous(&TouchDevice::scheduler_callback, this, HD_DEFAULT_SCHEDULER_PRIORITY);
     throw_on_hd_error("Failed to schedule device callback");
 
     hdStartScheduler();
     throw_on_hd_error("Failed to start scheduler");
+    hdScheduleSynchronous(&TouchDevice::enable_force_output_callback, this, HD_MAX_SCHEDULER_PRIORITY);
+    throw_on_hd_error("Failed to enable force output");
     running_ = true;
   }
 
@@ -141,38 +137,68 @@ public:
   {
     if (!opened_ || !running_) return;
 
-    {
-      std::lock_guard<std::mutex> lock(mutex_);
-      raw_force_command_ = {0.0, 0.0, 0.0};
-    }
+    set_force_command({0.0, 0.0, 0.0});
+    hdScheduleSynchronous(
+      &TouchDevice::disable_force_output_callback, this, HD_MAX_SCHEDULER_PRIORITY);
+    throw_on_hd_error("Failed to disable force output");
 
     hdStopScheduler();
     if (callback_handle_ != HD_INVALID_HANDLE) {
       hdUnschedule(callback_handle_);
       callback_handle_ = HD_INVALID_HANDLE;
     }
-    hdDisable(HD_FORCE_OUTPUT);
     running_ = false;
   }
 
   void set_force_command(const Vec3 & force)
   {
-    std::lock_guard<std::mutex> lock(mutex_);
-    raw_force_command_ = force;
+    if (!running_) {
+      raw_force_command_ = force;
+      return;
+    }
+
+    CommandRequest request{this, force};
+    hdScheduleSynchronous(
+      &TouchDevice::set_force_command_callback, &request, HD_MAX_SCHEDULER_PRIORITY);
+    throw_on_hd_error("Failed to update force command");
   }
 
   RawSnapshot snapshot() const
   {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return snapshot_;
+    if (!running_) {
+      return snapshot_;
+    }
+
+    SnapshotRequest request{this, {}};
+    hdScheduleSynchronous(&TouchDevice::copy_snapshot_callback, &request, HD_MIN_SCHEDULER_PRIORITY);
+    return request.snapshot;
+  }
+
+  bool calibration_ok() const
+  {
+    hdMakeCurrentDevice(handle_);
+    throw_on_hd_error("Failed to make device current");
+    return hdCheckCalibration() == HD_CALIBRATION_OK;
   }
 
 private:
+  struct CommandRequest
+  {
+    TouchDevice * device;
+    Vec3 force;
+  };
+
+  struct SnapshotRequest
+  {
+    const TouchDevice * device;
+    RawSnapshot snapshot;
+  };
+
   static HDCallbackCode HDCALLBACK scheduler_callback(void * data)
   {
     auto * self = static_cast<TouchDevice *>(data);
 
-    hdBeginFrame(hdGetCurrentDevice());
+    hdBeginFrame(self->handle_);
 
     RawSnapshot local_snapshot;
     hdGetDoublev(HD_CURRENT_VELOCITY, local_snapshot.velocity_mm_s.data());
@@ -190,15 +216,10 @@ private:
     local_snapshot.joint_angles[4] = gimbal_angles[1];
     local_snapshot.joint_angles[5] = gimbal_angles[2];
 
-    Vec3 local_force_command{0.0, 0.0, 0.0};
-    {
-      std::lock_guard<std::mutex> lock(self->mutex_);
-      self->snapshot_ = local_snapshot;
-      local_force_command = self->raw_force_command_;
-    }
+    self->snapshot_ = local_snapshot;
 
-    hdSetDoublev(HD_CURRENT_FORCE, local_force_command.data());
-    hdEndFrame(hdGetCurrentDevice());
+    hdSetDoublev(HD_CURRENT_FORCE, self->raw_force_command_.data());
+    hdEndFrame(self->handle_);
 
     const HDErrorInfo error = hdGetError();
     if (HD_DEVICE_ERROR(error)) {
@@ -211,7 +232,40 @@ private:
     return HD_CALLBACK_CONTINUE;
   }
 
-  mutable std::mutex mutex_;
+  static HDCallbackCode HDCALLBACK set_force_command_callback(void * data)
+  {
+    auto * request = static_cast<CommandRequest *>(data);
+    request->device->raw_force_command_ = request->force;
+    return HD_CALLBACK_DONE;
+  }
+
+  static HDCallbackCode HDCALLBACK copy_snapshot_callback(void * data)
+  {
+    auto * request = static_cast<SnapshotRequest *>(data);
+    request->snapshot = request->device->snapshot_;
+    return HD_CALLBACK_DONE;
+  }
+
+  static HDCallbackCode HDCALLBACK enable_force_output_callback(void * data)
+  {
+    auto * self = static_cast<TouchDevice *>(data);
+    hdMakeCurrentDevice(self->handle_);
+    if (!hdIsEnabled(HD_FORCE_OUTPUT)) {
+      hdEnable(HD_FORCE_OUTPUT);
+    }
+    return HD_CALLBACK_DONE;
+  }
+
+  static HDCallbackCode HDCALLBACK disable_force_output_callback(void * data)
+  {
+    auto * self = static_cast<TouchDevice *>(data);
+    hdMakeCurrentDevice(self->handle_);
+    if (hdIsEnabled(HD_FORCE_OUTPUT)) {
+      hdDisable(HD_FORCE_OUTPUT);
+    }
+    return HD_CALLBACK_DONE;
+  }
+
   HHD handle_{HD_INVALID_HANDLE};
   HDSchedulerHandle callback_handle_{HD_INVALID_HANDLE};
   bool opened_{false};
@@ -379,6 +433,14 @@ hardware_interface::CallbackReturn TouchSystemHardware::on_activate(
 
   try {
     set_zero_command_();
+    if (!touch_device_->calibration_ok()) {
+      RCLCPP_ERROR(
+        get_logger(),
+        "Haptic device calibration is not OK. Force output will not behave correctly until the "
+        "device is calibrated with the vendor/OpenHaptics calibration tool.");
+      active_ = false;
+      return hardware_interface::CallbackReturn::ERROR;
+    }
     touch_device_->start();
     active_ = true;
     return hardware_interface::CallbackReturn::SUCCESS;
