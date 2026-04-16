@@ -7,7 +7,6 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
-    use_mock_hardware = LaunchConfiguration("use_mock_hardware")
     device_name = LaunchConfiguration("device_name")
 
     robot_description_content = Command(
@@ -17,25 +16,21 @@ def generate_launch_description():
             PathJoinSubstitution(
                 [FindPackageShare("touch_description"), "urdf", "touch.urdf.xacro"]
             ),
-            " use_mock_hardware:=",
-            use_mock_hardware,
-            " device_name:='",
-            device_name,
-            "'",
         ]
     )
     robot_description = {
         "robot_description": ParameterValue(robot_description_content, value_type=str)
     }
 
-    controllers_file = PathJoinSubstitution(
-        [FindPackageShare("touch_bringup"), "config", "touch_controllers.yaml"]
+    driver_params = PathJoinSubstitution(
+        [FindPackageShare("touch_bringup"), "config", "touch_driver.yaml"]
     )
 
-    controller_manager_node = Node(
-        package="controller_manager",
-        executable="ros2_control_node",
-        parameters=[robot_description, controllers_file],
+    touch_driver_node = Node(
+        package="touch_hardware",
+        executable="touch_driver",
+        name="touch_driver",
+        parameters=[driver_params, {"device_name": device_name}],
         output="both",
     )
 
@@ -46,35 +41,10 @@ def generate_launch_description():
         output="both",
     )
 
-    joint_state_broadcaster_spawner = Node(
-        package="controller_manager",
-        executable="spawner",
-        arguments=["joint_state_broadcaster"],
-        output="both",
-    )
-
-    force_controller_spawner = Node(
-        package="controller_manager",
-        executable="spawner",
-        arguments=["touch_force_controller"],
-        output="both",
-    )
-
-    pose_broadcaster_spawner = Node(
-        package="controller_manager",
-        executable="spawner",
-        arguments=["touch_pose_broadcaster"],
-        output="both",
-    )
-
     return LaunchDescription(
         [
-            DeclareLaunchArgument("use_mock_hardware", default_value="false"),
             DeclareLaunchArgument("device_name", default_value="Default Device"),
-            controller_manager_node,
+            touch_driver_node,
             robot_state_publisher_node,
-            joint_state_broadcaster_spawner,
-            force_controller_spawner,
-            pose_broadcaster_spawner,
         ]
     )

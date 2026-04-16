@@ -5,7 +5,7 @@ project(touch_description)
 find_package(ament_cmake REQUIRED)
 
 install(
-  DIRECTORY urdf ros2_control meshes
+  DIRECTORY urdf meshes
   DESTINATION share/${PROJECT_NAME}
 )
 

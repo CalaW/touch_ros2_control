@@ -1,0 +1,20 @@
+<library path="touch_controllers_plugins">
+  <class
+    name="touch_controllers/NullController"
+    type="touch_controllers::NullController"
+    base_class_type="touch_hardware::TouchController">
+    <description>Zero-force controller.</description>
+  </class>
+  <class
+    name="touch_controllers/DirectForceController"
+    type="touch_controllers::DirectForceController"
+    base_class_type="touch_hardware::TouchController">
+    <description>Pass-through force controller.</description>
+  </class>
+  <class
+    name="touch_controllers/ImpedanceController"
+    type="touch_controllers::ImpedanceController"
+    base_class_type="touch_hardware::TouchController">
+    <description>Cartesian impedance controller.</description>
+  </class>
+</library>

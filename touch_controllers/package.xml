@@ -3,20 +3,18 @@
 <package format="3">
   <name>touch_controllers</name>
   <version>0.0.0</version>
-  <description>Controllers and control prototypes for touch_ros2_control.</description>
+  <description>Pluginlib controllers for the Touch OpenHaptics driver.</description>
   <maintainer email="git@thu-irml.com">dental</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>eigen3_cmake_module</buildtool_depend>
 
-  <depend>rclcpp</depend>
-  <depend>rclpy</depend>
-  <depend>geometry_msgs</depend>
-  <depend>control_msgs</depend>
-  <exec_depend>python3-numpy</exec_depend>
+  <depend>eigen</depend>
+  <depend>pluginlib</depend>
+  <depend>touch_hardware</depend>
 
-  <test_depend>ament_lint_auto</test_depend>
-  <test_depend>ament_lint_common</test_depend>
+  <test_depend>ament_cmake_gtest</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

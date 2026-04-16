@@ -3,7 +3,7 @@
 <package format="3">
   <name>touch_description</name>
   <version>0.0.0</version>
-  <description>URDF/xacro description for the minimal ros2_control Touch workspace.</description>
+  <description>URDF/xacro description for the Touch OpenHaptics driver workspace.</description>
   <maintainer email="git@thu-irml.com">dental</maintainer>
   <license>MIT</license>
 

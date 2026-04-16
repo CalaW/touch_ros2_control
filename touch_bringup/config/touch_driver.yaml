@@ -1,0 +1,9 @@
+touch_driver:
+  ros__parameters:
+    device_name: Default Device
+    publish_rate_hz: 250.0
+    controller_plugin: touch_controllers/ImpedanceController
+    max_force: 8.0
+    impedance_stiffness: [25.0, 25.0, 25.0]
+    # impedance_damping: [2.5, 2.5, 2.5]
+    impedance_damping: [0.0, 0.0, 0.0]

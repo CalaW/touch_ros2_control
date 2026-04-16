@@ -1,0 +1,45 @@
+#ifndef TOUCH_HARDWARE__CONTROLLER_BASE_HPP_
+#define TOUCH_HARDWARE__CONTROLLER_BASE_HPP_
+
+#include <array>
+
+namespace touch_hardware
+{
+
+struct DeviceState
+{
+  std::array<double, 3> position_m{0.0, 0.0, 0.0};
+  std::array<double, 3> linear_velocity_m_s{0.0, 0.0, 0.0};
+  std::array<double, 4> orientation_xyzw{0.0, 0.0, 0.0, 1.0};
+  std::array<double, 6> joint_positions_rad{0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  std::array<double, 6> joint_velocities_rad_s{0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+};
+
+struct CommandState
+{
+  std::array<double, 3> direct_force_n{0.0, 0.0, 0.0};
+  std::array<double, 3> target_position_m{0.0, 0.0, 0.0};
+  std::array<double, 3> impedance_stiffness{45.0, 45.0, 45.0};
+  std::array<double, 3> impedance_damping{2.5, 2.5, 2.5};
+  bool target_pose_valid{false};
+};
+
+struct ForceCommand
+{
+  std::array<double, 3> force_n{0.0, 0.0, 0.0};
+};
+
+class TouchController
+{
+public:
+  virtual ~TouchController();
+
+  virtual void reset(const DeviceState & state) = 0;
+
+  virtual ForceCommand compute_force(
+    const DeviceState & state, const CommandState & command, double dt) = 0;
+};
+
+}  // namespace touch_hardware
+
+#endif  // TOUCH_HARDWARE__CONTROLLER_BASE_HPP_

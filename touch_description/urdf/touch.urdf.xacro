@@ -1,10 +1,5 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="touch">
-  <xacro:arg name="use_mock_hardware" default="false"/>
-  <xacro:arg name="device_name" default="Default Device"/>
-
-  <xacro:include filename="$(find touch_description)/ros2_control/touch.ros2_control.xacro"/>
-
   <material name="metal_seamed">
     <color rgba="0.5 0.5 0.5 1.0"/>
   </material>
@@ -146,9 +141,4 @@
     <child link="tcp"/>
     <origin xyz="0 0.038 0" rpy="0 0 0"/>
   </joint>
-
-  <xacro:touch_ros2_control
-    name="TouchSystem"
-    use_mock_hardware="$(arg use_mock_hardware)"
-    device_name="$(arg device_name)"/>
 </robot>
