@@ -6,6 +6,14 @@
 namespace touch_hardware
 {
 
+struct RawDeviceState
+{
+  std::array<double, 3> velocity_mm_s{0.0, 0.0, 0.0};
+  std::array<double, 16> transform{};
+  std::array<double, 3> arm_joint_angles_rad{0.0, 0.0, 0.0};
+  std::array<double, 3> gimbal_angles_rad{0.0, 0.0, 0.0};
+};
+
 struct DeviceState
 {
   std::array<double, 3> position_m{0.0, 0.0, 0.0};
@@ -17,7 +25,7 @@ struct DeviceState
 
 struct CommandState
 {
-  std::array<double, 3> direct_force_n{0.0, 0.0, 0.0};
+  std::array<double, 3> device_force_n{0.0, 0.0, 0.0};
   std::array<double, 3> target_position_m{0.0, 0.0, 0.0};
   std::array<double, 3> impedance_stiffness{45.0, 45.0, 45.0};
   std::array<double, 3> impedance_damping{2.5, 2.5, 2.5};
@@ -26,7 +34,7 @@ struct CommandState
 
 struct ForceCommand
 {
-  std::array<double, 3> force_n{0.0, 0.0, 0.0};
+  std::array<double, 3> device_force_n{0.0, 0.0, 0.0};
 };
 
 class TouchController
@@ -34,10 +42,10 @@ class TouchController
 public:
   virtual ~TouchController();
 
-  virtual void reset(const DeviceState & state) = 0;
+  virtual void reset(const RawDeviceState & state) = 0;
 
   virtual ForceCommand compute_force(
-    const DeviceState & state, const CommandState & command, double dt) = 0;
+    const RawDeviceState & state, const CommandState & command, double dt) = 0;
 };
 
 }  // namespace touch_hardware

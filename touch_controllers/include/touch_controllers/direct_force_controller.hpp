@@ -9,10 +9,10 @@ namespace touch_controllers
 class DirectForceController : public touch_hardware::TouchController
 {
 public:
-  void reset(const touch_hardware::DeviceState & state) override;
+  void reset(const touch_hardware::RawDeviceState & state) override;
 
   touch_hardware::ForceCommand compute_force(
-    const touch_hardware::DeviceState & state,
+    const touch_hardware::RawDeviceState & state,
     const touch_hardware::CommandState & command,
     double dt) override;
 };

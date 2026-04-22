@@ -5,12 +5,12 @@
 namespace touch_controllers
 {
 
-void NullController::reset(const touch_hardware::DeviceState &)
+void NullController::reset(const touch_hardware::RawDeviceState &)
 {
 }
 
 touch_hardware::ForceCommand NullController::compute_force(
-  const touch_hardware::DeviceState &,
+  const touch_hardware::RawDeviceState &,
   const touch_hardware::CommandState &,
   double)
 {

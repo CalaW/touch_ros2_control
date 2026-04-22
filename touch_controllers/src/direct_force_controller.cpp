@@ -5,17 +5,17 @@
 namespace touch_controllers
 {
 
-void DirectForceController::reset(const touch_hardware::DeviceState &)
+void DirectForceController::reset(const touch_hardware::RawDeviceState &)
 {
 }
 
 touch_hardware::ForceCommand DirectForceController::compute_force(
-  const touch_hardware::DeviceState &,
+  const touch_hardware::RawDeviceState &,
   const touch_hardware::CommandState & command,
   double)
 {
   touch_hardware::ForceCommand output;
-  output.force_n = command.direct_force_n;
+  output.device_force_n = command.device_force_n;
   return output;
 }
 

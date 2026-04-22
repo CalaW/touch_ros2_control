@@ -1,7 +1,9 @@
 #include "touch_hardware/controller_base.hpp"
+#include "touch_hardware/device_transforms.hpp"
 
 #include <pluginlib/class_loader.hpp>
 #include <rclcpp/rclcpp.hpp>
+
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/twist_stamped.hpp>
 #include <geometry_msgs/msg/wrench_stamped.hpp>
@@ -12,8 +14,6 @@
 #include <HD/hdDevice.h>
 #include <HD/hdScheduler.h>
 #include <HDU/hduError.h>
-
-#include <Eigen/Geometry>
 
 #include <algorithm>
 #include <array>
@@ -34,22 +34,17 @@ namespace
 {
 
 using Clock = std::chrono::steady_clock;
-constexpr double kMillimetersToMeters = 1e-3;
 
 struct StateSnapshot
 {
-  DeviceState state;
-  std::array<double, 3> commanded_force_n{0.0, 0.0, 0.0};
+  RawDeviceState raw_state;
+  RawDeviceState previous_raw_state;
+  std::array<double, 3> commanded_device_force_n{0.0, 0.0, 0.0};
+  double sample_period_s{0.0};
+  bool have_previous_raw_state{false};
 };
 
-struct RawSnapshot
-{
-  std::array<double, 3> velocity_mm_s{0.0, 0.0, 0.0};
-  std::array<double, 16> transform{};
-  std::array<double, 6> joint_angles{};
-};
-
-template<typename T>
+template <typename T>
 class DoubleBuffer
 {
 public:
@@ -60,73 +55,12 @@ public:
     index_.store(next_index, std::memory_order_release);
   }
 
-  T read() const
-  {
-    return values_[index_.load(std::memory_order_acquire)];
-  }
+  T read() const { return values_[index_.load(std::memory_order_acquire)]; }
 
 private:
   std::array<T, 2> values_{};
   std::atomic<int> index_{0};
 };
-
-const Eigen::Matrix3d & raw_to_ros_basis()
-{
-  static const Eigen::Matrix3d basis = (Eigen::Matrix3d() <<
-    0.0, 0.0, 1.0,
-    1.0, 0.0, 0.0,
-    0.0, 1.0, 0.0).finished();
-  return basis;
-}
-
-std::array<double, 3> transform_vector_raw_to_ros(const std::array<double, 3> & value)
-{
-  const Eigen::Vector3d raw(value[0], value[1], value[2]);
-  const Eigen::Vector3d ros = raw_to_ros_basis() * raw;
-  return {ros.x(), ros.y(), ros.z()};
-}
-
-std::array<double, 3> transform_vector_ros_to_raw(const std::array<double, 3> & value)
-{
-  const Eigen::Vector3d ros(value[0], value[1], value[2]);
-  const Eigen::Vector3d raw = raw_to_ros_basis().transpose() * ros;
-  return {raw.x(), raw.y(), raw.z()};
-}
-
-void raw_transform_to_ros_pose(
-  const std::array<double, 16> & transform,
-  std::array<double, 3> & position_m,
-  std::array<double, 4> & orientation_xyzw)
-{
-  const Eigen::Vector3d raw_position_mm(transform[12], transform[13], transform[14]);
-  const Eigen::Vector3d ros_position_m = raw_to_ros_basis() * raw_position_mm * kMillimetersToMeters;
-
-  Eigen::Matrix3d rotation_raw;
-  rotation_raw <<
-    transform[0], transform[1], transform[2],
-    transform[4], transform[5], transform[6],
-    transform[8], transform[9], transform[10];
-
-  const Eigen::Matrix3d rotation_ros =
-    raw_to_ros_basis() * rotation_raw.transpose() * raw_to_ros_basis().transpose();
-  Eigen::Quaterniond q_ros(rotation_ros);
-  q_ros.normalize();
-
-  position_m = {ros_position_m.x(), ros_position_m.y(), ros_position_m.z()};
-  orientation_xyzw = {q_ros.x(), q_ros.y(), q_ros.z(), q_ros.w()};
-}
-
-std::array<double, 6> raw_joint_angles_to_ros(const std::array<double, 6> & joint_angles)
-{
-  return {
-    joint_angles[0],
-    joint_angles[1],
-    joint_angles[2],
-    joint_angles[3],
-    joint_angles[4],
-    joint_angles[5],
-  };
-}
 
 void throw_on_hd_error(const std::string & message)
 {
@@ -141,17 +75,12 @@ class ServoCore
 public:
   ServoCore(std::shared_ptr<TouchController> controller, double max_force)
   : controller_(std::move(controller)), max_force_(max_force)
-  {}
-
-  void set_command(const CommandState & command)
   {
-    command_buffer_.write(command);
   }
 
-  StateSnapshot latest_snapshot() const
-  {
-    return state_buffer_.read();
-  }
+  void set_command(const CommandState & command) { command_buffer_.write(command); }
+
+  StateSnapshot latest_snapshot() const { return state_buffer_.read(); }
 
   static HDCallbackCode HDCALLBACK scheduler_callback(void * data)
   {
@@ -174,51 +103,23 @@ private:
     const HHD device = hdGetCurrentDevice();
     hdBeginFrame(device);
 
-    RawSnapshot raw_snapshot;
-    hdGetDoublev(HD_CURRENT_VELOCITY, raw_snapshot.velocity_mm_s.data());
-    hdGetDoublev(HD_CURRENT_TRANSFORM, raw_snapshot.transform.data());
-
-    std::array<double, 3> arm_joint_angles{};
-    std::array<double, 3> gimbal_angles{};
-    hdGetDoublev(HD_CURRENT_JOINT_ANGLES, arm_joint_angles.data());
-    hdGetDoublev(HD_CURRENT_GIMBAL_ANGLES, gimbal_angles.data());
-
-    raw_snapshot.joint_angles[0] = arm_joint_angles[0];
-    raw_snapshot.joint_angles[1] = arm_joint_angles[1];
-    raw_snapshot.joint_angles[2] = arm_joint_angles[2] - arm_joint_angles[1];
-    raw_snapshot.joint_angles[3] = gimbal_angles[0];
-    raw_snapshot.joint_angles[4] = gimbal_angles[1];
-    raw_snapshot.joint_angles[5] = gimbal_angles[2];
-
-    DeviceState state;
-    raw_transform_to_ros_pose(raw_snapshot.transform, state.position_m, state.orientation_xyzw);
-    state.linear_velocity_m_s = transform_vector_raw_to_ros(raw_snapshot.velocity_mm_s);
-    for (double & value : state.linear_velocity_m_s) {
-      value *= kMillimetersToMeters;
-    }
-    state.joint_positions_rad = raw_joint_angles_to_ros(raw_snapshot.joint_angles);
-
-    if (have_previous_joint_positions_) {
-      for (size_t i = 0; i < state.joint_positions_rad.size(); ++i) {
-        state.joint_velocities_rad_s[i] =
-          (state.joint_positions_rad[i] - previous_joint_positions_[i]) / dt;
-      }
-    }
-    previous_joint_positions_ = state.joint_positions_rad;
-    have_previous_joint_positions_ = true;
+    RawDeviceState raw_state;
+    hdGetDoublev(HD_CURRENT_VELOCITY, raw_state.velocity_mm_s.data());
+    hdGetDoublev(HD_CURRENT_TRANSFORM, raw_state.transform.data());
+    hdGetDoublev(HD_CURRENT_JOINT_ANGLES, raw_state.arm_joint_angles_rad.data());
+    hdGetDoublev(HD_CURRENT_GIMBAL_ANGLES, raw_state.gimbal_angles_rad.data());
 
     if (!controller_initialized_) {
-      controller_->reset(state);
+      controller_->reset(raw_state);
       controller_initialized_ = true;
     }
 
     const CommandState command = command_buffer_.read();
-    ForceCommand ros_force_command = controller_->compute_force(state, command, dt);
-    sanitize_force(ros_force_command.force_n);
-    clamp_force(ros_force_command.force_n);
+    ForceCommand force_command = controller_->compute_force(raw_state, command, dt);
+    sanitize_force(force_command.device_force_n);
+    clamp_force(force_command.device_force_n);
 
-    const std::array<double, 3> raw_force_command = transform_vector_ros_to_raw(ros_force_command.force_n);
-    hdSetDoublev(HD_CURRENT_FORCE, raw_force_command.data());
+    hdSetDoublev(HD_CURRENT_FORCE, force_command.device_force_n.data());
     hdEndFrame(device);
 
     const HDErrorInfo error = hdGetError();
@@ -230,9 +131,14 @@ private:
     }
 
     StateSnapshot snapshot;
-    snapshot.state = state;
-    snapshot.commanded_force_n = ros_force_command.force_n;
+    snapshot.raw_state = raw_state;
+    snapshot.previous_raw_state = previous_raw_state_;
+    snapshot.commanded_device_force_n = force_command.device_force_n;
+    snapshot.sample_period_s = dt;
+    snapshot.have_previous_raw_state = have_previous_raw_state_;
     state_buffer_.write(snapshot);
+    previous_raw_state_ = raw_state;
+    have_previous_raw_state_ = true;
 
     return HD_CALLBACK_CONTINUE;
   }
@@ -248,8 +154,8 @@ private:
 
   void clamp_force(std::array<double, 3> & force) const
   {
-    const double magnitude = std::sqrt(
-      force[0] * force[0] + force[1] * force[1] + force[2] * force[2]);
+    const double magnitude =
+      std::sqrt(force[0] * force[0] + force[1] * force[1] + force[2] * force[2]);
     if (magnitude <= max_force_ || magnitude <= 0.0) {
       return;
     }
@@ -265,91 +171,66 @@ private:
   DoubleBuffer<CommandState> command_buffer_;
   DoubleBuffer<StateSnapshot> state_buffer_;
   Clock::time_point last_tick_time_{};
-  std::array<double, 6> previous_joint_positions_{};
-  bool have_previous_joint_positions_{false};
+  RawDeviceState previous_raw_state_{};
+  bool have_previous_raw_state_{false};
   bool controller_initialized_{false};
 };
 
 class HdapiDevice
 {
 public:
-  void open(const std::string & device_name)
+  void open(const std::string & device_name, ServoCore * servo_core)
   {
-    if (opened_) {
+    if (is_open_) {
       return;
     }
+    if (device_name.empty()) {
+      throw std::runtime_error("Device name cannot be empty.");
+    }
 
-    handle_ = hdInitDevice(device_name.c_str());
+    device_handle_ = hdInitDevice(device_name.c_str());
     throw_on_hd_error("Failed to initialize haptic device");
-    hdMakeCurrentDevice(handle_);
-    throw_on_hd_error("Failed to make device current");
-    hdEnable(HD_FORCE_OUTPUT);
-    throw_on_hd_error("Failed to enable force output");
-    opened_ = true;
-  }
 
-  void start(ServoCore * servo_core)
-  {
-    if (!opened_ || running_) {
-      return;
+    if (!hdIsEnabled(HD_FORCE_OUTPUT)) {
+      hdEnable(HD_FORCE_OUTPUT);
+    } else {
+      throw std::runtime_error("Failed to enable force output.");
     }
 
-    hdMakeCurrentDevice(handle_);
-    throw_on_hd_error("Failed to make device current");
-    callback_handle_ = hdScheduleAsynchronous(
+    hdScheduleAsynchronous(
       &ServoCore::scheduler_callback, servo_core, HD_DEFAULT_SCHEDULER_PRIORITY);
     throw_on_hd_error("Failed to schedule servo callback");
+
     hdStartScheduler();
     throw_on_hd_error("Failed to start scheduler");
-    running_ = true;
-  }
-
-  void stop()
-  {
-    if (!opened_ || !running_) {
-      return;
-    }
-
-    hdStopScheduler();
-    hdMakeCurrentDevice(handle_);
-    if (hdIsEnabled(HD_FORCE_OUTPUT)) {
-      hdDisable(HD_FORCE_OUTPUT);
-    }
-    running_ = false;
-    callback_handle_ = HD_INVALID_HANDLE;
+    is_open_ = true;
   }
 
   void close()
   {
-    if (!opened_) {
+    if (!is_open_) {
       return;
     }
 
-    stop();
-    hdMakeCurrentDevice(handle_);
-    hdDisableDevice(handle_);
-    handle_ = HD_INVALID_HANDLE;
-    opened_ = false;
+    hdStopScheduler();
+    hdDisable(HD_FORCE_OUTPUT);
+    hdDisableDevice(device_handle_);
+    device_handle_ = HD_INVALID_HANDLE;
+    is_open_ = false;
   }
 
-  ~HdapiDevice()
-  {
-    close();
-  }
+  ~HdapiDevice() { close(); }
 
 private:
-  HHD handle_{HD_INVALID_HANDLE};
-  HDSchedulerHandle callback_handle_{HD_INVALID_HANDLE};
-  bool opened_{false};
-  bool running_{false};
+  HHD device_handle_{HD_INVALID_HANDLE};
+  bool is_open_{false};
 };
 
 class TouchNode : public rclcpp::Node
 {
 public:
   TouchNode()
-  : Node("touch_driver"),
-    controller_loader_("touch_hardware", "touch_hardware::TouchController")
+  : Node("touch_driver"), controller_loader_("touch_hardware", "touch_hardware::TouchController")
   {
     declare_parameter<std::string>("device_name", "Default Device");
     declare_parameter<double>("publish_rate_hz", 250.0);
@@ -375,17 +256,18 @@ public:
     joint_state_pub_ = create_publisher<sensor_msgs::msg::JointState>("/joint_states", 10);
     pose_pub_ = create_publisher<geometry_msgs::msg::PoseStamped>("/touch/state/pose", 10);
     twist_pub_ = create_publisher<geometry_msgs::msg::TwistStamped>("/touch/state/twist", 10);
-    wrench_pub_ = create_publisher<geometry_msgs::msg::WrenchStamped>(
-      "/touch/state/wrench_commanded", 10);
+    wrench_pub_ =
+      create_publisher<geometry_msgs::msg::WrenchStamped>("/touch/state/wrench_commanded", 10);
 
     direct_wrench_sub_ = create_subscription<geometry_msgs::msg::WrenchStamped>(
       "/touch/command/direct_wrench", 10,
       [this](const geometry_msgs::msg::WrenchStamped::SharedPtr msg) {
-        command_state_.direct_force_n = {
+        const std::array<double, 3> ros_force = {
           msg->wrench.force.x,
           msg->wrench.force.y,
           msg->wrench.force.z,
         };
+        command_state_.device_force_n = transform_vector_ros_to_device(ros_force);
         servo_core_->set_command(command_state_);
       });
 
@@ -401,8 +283,7 @@ public:
         servo_core_->set_command(command_state_);
         RCLCPP_INFO(
           get_logger(), "Received target pose: [%.6f, %.6f, %.6f]",
-          command_state_.target_position_m[0],
-          command_state_.target_position_m[1],
+          command_state_.target_position_m[0], command_state_.target_position_m[1],
           command_state_.target_position_m[2]);
       });
 
@@ -411,21 +292,7 @@ public:
       std::chrono::duration_cast<std::chrono::nanoseconds>(publish_period),
       std::bind(&TouchNode::publish_state, this));
 
-    hdapi_device_.open(device_name);
-    hdapi_device_.start(servo_core_.get());
-  }
-
-  ~TouchNode() override
-  {
-    try {
-      CommandState zero_command = command_state_;
-      zero_command.direct_force_n = {0.0, 0.0, 0.0};
-      servo_core_->set_command(zero_command);
-      hdapi_device_.stop();
-      hdapi_device_.close();
-    } catch (const std::exception & error) {
-      RCLCPP_ERROR(get_logger(), "Shutdown failed: %s", error.what());
-    }
+    hdapi_device_.open(device_name, servo_core_.get());
   }
 
 private:
@@ -442,42 +309,52 @@ private:
   {
     const StateSnapshot snapshot = servo_core_->latest_snapshot();
     const auto stamp = now();
+    std::array<double, 6> previous_joint_positions{};
+    const std::array<double, 6> * previous_joint_positions_ptr = nullptr;
+    if (snapshot.have_previous_raw_state) {
+      previous_joint_positions = calculate_joint_positions_rad(snapshot.previous_raw_state);
+      previous_joint_positions_ptr = &previous_joint_positions;
+    }
+
+    const DeviceState state = transform_raw_state_to_ros(
+      snapshot.raw_state, previous_joint_positions_ptr, snapshot.sample_period_s);
+    const auto commanded_force_ros =
+      transform_vector_device_to_ros(snapshot.commanded_device_force_n);
 
     sensor_msgs::msg::JointState joint_state;
     joint_state.header.stamp = stamp;
     joint_state.name = {"waist", "shoulder", "elbow", "yaw", "pitch", "roll"};
-    joint_state.position.assign(
-      snapshot.state.joint_positions_rad.begin(), snapshot.state.joint_positions_rad.end());
+    joint_state.position.assign(state.joint_positions_rad.begin(), state.joint_positions_rad.end());
     joint_state.velocity.assign(
-      snapshot.state.joint_velocities_rad_s.begin(), snapshot.state.joint_velocities_rad_s.end());
+      state.joint_velocities_rad_s.begin(), state.joint_velocities_rad_s.end());
     joint_state_pub_->publish(joint_state);
 
     geometry_msgs::msg::PoseStamped pose;
     pose.header.stamp = stamp;
     pose.header.frame_id = "touch_base";
-    pose.pose.position.x = snapshot.state.position_m[0];
-    pose.pose.position.y = snapshot.state.position_m[1];
-    pose.pose.position.z = snapshot.state.position_m[2];
-    pose.pose.orientation.x = snapshot.state.orientation_xyzw[0];
-    pose.pose.orientation.y = snapshot.state.orientation_xyzw[1];
-    pose.pose.orientation.z = snapshot.state.orientation_xyzw[2];
-    pose.pose.orientation.w = snapshot.state.orientation_xyzw[3];
+    pose.pose.position.x = state.position_m[0];
+    pose.pose.position.y = state.position_m[1];
+    pose.pose.position.z = state.position_m[2];
+    pose.pose.orientation.x = state.orientation_xyzw[0];
+    pose.pose.orientation.y = state.orientation_xyzw[1];
+    pose.pose.orientation.z = state.orientation_xyzw[2];
+    pose.pose.orientation.w = state.orientation_xyzw[3];
     pose_pub_->publish(pose);
 
     geometry_msgs::msg::TwistStamped twist;
     twist.header.stamp = stamp;
     twist.header.frame_id = "touch_base";
-    twist.twist.linear.x = snapshot.state.linear_velocity_m_s[0];
-    twist.twist.linear.y = snapshot.state.linear_velocity_m_s[1];
-    twist.twist.linear.z = snapshot.state.linear_velocity_m_s[2];
+    twist.twist.linear.x = state.linear_velocity_m_s[0];
+    twist.twist.linear.y = state.linear_velocity_m_s[1];
+    twist.twist.linear.z = state.linear_velocity_m_s[2];
     twist_pub_->publish(twist);
 
     geometry_msgs::msg::WrenchStamped wrench;
     wrench.header.stamp = stamp;
     wrench.header.frame_id = "touch_base";
-    wrench.wrench.force.x = snapshot.commanded_force_n[0];
-    wrench.wrench.force.y = snapshot.commanded_force_n[1];
-    wrench.wrench.force.z = snapshot.commanded_force_n[2];
+    wrench.wrench.force.x = commanded_force_ros[0];
+    wrench.wrench.force.y = commanded_force_ros[1];
+    wrench.wrench.force.z = commanded_force_ros[2];
     wrench_pub_->publish(wrench);
   }
 

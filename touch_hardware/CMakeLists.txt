@@ -67,6 +67,7 @@ install(TARGETS touch_driver
 
 ament_export_include_directories(include)
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
+ament_export_dependencies(Eigen3)
 ament_export_dependencies(geometry_msgs)
 ament_export_dependencies(pluginlib)
 ament_export_dependencies(rclcpp)
