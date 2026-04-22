@@ -1,7 +1,6 @@
 #include "touch_hardware/controller_base.hpp"
 #include "touch_hardware/device_transforms.hpp"
 
-#include <pluginlib/class_loader.hpp>
 #include <rclcpp/rclcpp.hpp>
 
 #include <geometry_msgs/msg/pose_stamped.hpp>
@@ -25,7 +24,6 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
-#include <utility>
 #include <vector>
 
 namespace touch_hardware
@@ -35,13 +33,28 @@ namespace
 
 using Clock = std::chrono::steady_clock;
 
-struct StateSnapshot
+struct ServoCommand
+{
+  std::array<double, 3> direct_force_ros_n{0.0, 0.0, 0.0};
+  std::array<double, 3> target_position_m{0.0, 0.0, 0.0};
+  std::array<double, 3> impedance_stiffness{45.0, 45.0, 45.0};
+  std::array<double, 3> impedance_damping{2.5, 2.5, 2.5};
+  bool target_pose_valid{false};
+};
+
+struct ServoSnapshot
 {
   RawDeviceState raw_state;
   RawDeviceState previous_raw_state;
+  std::array<double, 3> angular_velocity_rad_s{0.0, 0.0, 0.0};
+  std::array<double, 3> measured_force_device_n{0.0, 0.0, 0.0};
+  std::array<double, 3> measured_torque_nm{0.0, 0.0, 0.0};
+  std::array<double, 3> joint_torque_nm{0.0, 0.0, 0.0};
+  std::array<double, 3> gimbal_torque_nm{0.0, 0.0, 0.0};
   std::array<double, 3> commanded_device_force_n{0.0, 0.0, 0.0};
   double sample_period_s{0.0};
   bool have_previous_raw_state{false};
+  bool valid{false};
 };
 
 template <typename T>
@@ -64,30 +77,69 @@ private:
 
 void throw_on_hd_error(const std::string & message)
 {
-  const HDErrorInfo error = hdGetError();
-  if (error.errorCode != HD_SUCCESS) {
+  HDErrorInfo error;
+  if (HD_DEVICE_ERROR(error = hdGetError())) {
     throw std::runtime_error(message + ": " + hdGetErrorString(error.errorCode));
   }
 }
 
-class ServoCore
+class GeomagicStyleDevice
 {
 public:
-  ServoCore(std::shared_ptr<TouchController> controller, double max_force)
-  : controller_(std::move(controller)), max_force_(max_force)
+  explicit GeomagicStyleDevice(double max_force) : max_force_(max_force) {}
+
+  void set_command(const ServoCommand & command) { command_buffer_.write(command); }
+
+  ServoSnapshot latest_snapshot() const { return snapshot_buffer_.read(); }
+
+  void open(const std::string & device_name)
   {
+    if (is_open_) {
+      return;
+    }
+    if (device_name.empty()) {
+      throw std::runtime_error("No empty device_name allowed.");
+    }
+
+    device_handle_ = std::make_unique<HHD>(hdInitDevice(device_name.c_str()));
+    throw_on_hd_error("Failed to initialize haptic device");
+
+    if (!hdIsEnabled(HD_FORCE_OUTPUT)) {
+      hdEnable(HD_FORCE_OUTPUT);
+    } else {
+      throw std::runtime_error("Failed to enable force output.");
+    }
+
+    hdScheduleAsynchronous(
+      &GeomagicStyleDevice::scheduler_callback, this, HD_DEFAULT_SCHEDULER_PRIORITY);
+    throw_on_hd_error("Failed to schedule servo callback");
+
+    hdStartScheduler();
+    throw_on_hd_error("Failed to start scheduler");
+    is_open_ = true;
   }
 
-  void set_command(const CommandState & command) { command_buffer_.write(command); }
-
-  StateSnapshot latest_snapshot() const { return state_buffer_.read(); }
-
-  static HDCallbackCode HDCALLBACK scheduler_callback(void * data)
+  void close()
   {
-    return static_cast<ServoCore *>(data)->tick();
+    if (!is_open_) {
+      return;
+    }
+
+    hdStopScheduler();
+    hdDisable(HD_FORCE_OUTPUT);
+    hdDisableDevice(*device_handle_);
+    device_handle_.reset();
+    is_open_ = false;
   }
+
+  ~GeomagicStyleDevice() { close(); }
 
 private:
+  static HDCallbackCode HDCALLBACK scheduler_callback(void * data)
+  {
+    return static_cast<GeomagicStyleDevice *>(data)->tick();
+  }
+
   HDCallbackCode tick()
   {
     const auto now = Clock::now();
@@ -100,45 +152,78 @@ private:
     }
     last_tick_time_ = now;
 
-    const HHD device = hdGetCurrentDevice();
-    hdBeginFrame(device);
-
     RawDeviceState raw_state;
+    std::array<double, 3> position_mm{0.0, 0.0, 0.0};
+    std::array<double, 3> angular_velocity_rad_s{0.0, 0.0, 0.0};
+    std::array<double, 3> measured_force_device_n{0.0, 0.0, 0.0};
+    std::array<double, 3> measured_torque_nm{0.0, 0.0, 0.0};
+    std::array<double, 3> joint_torque_nm{0.0, 0.0, 0.0};
+    std::array<double, 3> gimbal_torque_nm{0.0, 0.0, 0.0};
+
+    hdBeginFrame(hdGetCurrentDevice());
+
+    hdGetDoublev(HD_CURRENT_POSITION, position_mm.data());
     hdGetDoublev(HD_CURRENT_VELOCITY, raw_state.velocity_mm_s.data());
     hdGetDoublev(HD_CURRENT_TRANSFORM, raw_state.transform.data());
+    hdGetDoublev(HD_CURRENT_ANGULAR_VELOCITY, angular_velocity_rad_s.data());
     hdGetDoublev(HD_CURRENT_JOINT_ANGLES, raw_state.arm_joint_angles_rad.data());
     hdGetDoublev(HD_CURRENT_GIMBAL_ANGLES, raw_state.gimbal_angles_rad.data());
+    hdGetDoublev(HD_CURRENT_FORCE, measured_force_device_n.data());
+    hdGetDoublev(HD_CURRENT_TORQUE, measured_torque_nm.data());
+    hdGetDoublev(HD_CURRENT_JOINT_TORQUE, joint_torque_nm.data());
+    hdGetDoublev(HD_CURRENT_GIMBAL_TORQUE, gimbal_torque_nm.data());
 
-    if (!controller_initialized_) {
-      controller_->reset(raw_state);
-      controller_initialized_ = true;
+    const auto ros_state = transform_raw_state_to_ros(raw_state, nullptr, 0.0);
+    if (!target_initialized_) {
+      target_position_m_ = ros_state.position_m;
+      target_initialized_ = true;
     }
 
-    const CommandState command = command_buffer_.read();
-    ForceCommand force_command = controller_->compute_force(raw_state, command, dt);
-    sanitize_force(force_command.device_force_n);
-    clamp_force(force_command.device_force_n);
+    const ServoCommand command = command_buffer_.read();
+    if (command.target_pose_valid) {
+      target_position_m_ = command.target_position_m;
+    }
 
-    hdSetDoublev(HD_CURRENT_FORCE, force_command.device_force_n.data());
-    hdEndFrame(device);
+    std::array<double, 3> commanded_force_ros_n = command.direct_force_ros_n;
+    for (std::size_t i = 0; i < commanded_force_ros_n.size(); ++i) {
+      commanded_force_ros_n[i] +=
+        command.impedance_stiffness[i] * (target_position_m_[i] - ros_state.position_m[i]) -
+        command.impedance_damping[i] * ros_state.linear_velocity_m_s[i];
+    }
 
-    const HDErrorInfo error = hdGetError();
-    if (HD_DEVICE_ERROR(error)) {
-      hduPrintError(stderr, &error, "Touch servo callback error");
+    std::array<double, 3> commanded_force_device_n =
+      transform_vector_ros_to_device(commanded_force_ros_n);
+    sanitize_force(commanded_force_device_n);
+    clamp_force(commanded_force_device_n);
+
+    hdSetDoublev(HD_CURRENT_FORCE, commanded_force_device_n.data());
+    hdEndFrame(hdGetCurrentDevice());
+
+    HDErrorInfo error;
+    if (HD_DEVICE_ERROR(error = hdGetError())) {
+      hduPrintError(stderr, &error, "Error during main scheduler callback\n");
       if (hduIsSchedulerError(&error)) {
         return HD_CALLBACK_DONE;
       }
     }
 
-    StateSnapshot snapshot;
+    ServoSnapshot snapshot;
     snapshot.raw_state = raw_state;
     snapshot.previous_raw_state = previous_raw_state_;
-    snapshot.commanded_device_force_n = force_command.device_force_n;
+    snapshot.angular_velocity_rad_s = transform_vector_device_to_ros(angular_velocity_rad_s);
+    snapshot.measured_force_device_n = measured_force_device_n;
+    snapshot.measured_torque_nm = measured_torque_nm;
+    snapshot.joint_torque_nm = joint_torque_nm;
+    snapshot.gimbal_torque_nm = gimbal_torque_nm;
+    snapshot.commanded_device_force_n = commanded_force_device_n;
     snapshot.sample_period_s = dt;
     snapshot.have_previous_raw_state = have_previous_raw_state_;
-    state_buffer_.write(snapshot);
+    snapshot.valid = true;
+    snapshot_buffer_.write(snapshot);
+
     previous_raw_state_ = raw_state;
     have_previous_raw_state_ = true;
+    (void)position_mm;
 
     return HD_CALLBACK_CONTINUE;
   }
@@ -166,92 +251,54 @@ private:
     }
   }
 
-  std::shared_ptr<TouchController> controller_;
+  std::unique_ptr<HHD> device_handle_;
+  bool is_open_{false};
   double max_force_;
-  DoubleBuffer<CommandState> command_buffer_;
-  DoubleBuffer<StateSnapshot> state_buffer_;
+  DoubleBuffer<ServoCommand> command_buffer_;
+  DoubleBuffer<ServoSnapshot> snapshot_buffer_;
   Clock::time_point last_tick_time_{};
   RawDeviceState previous_raw_state_{};
+  std::array<double, 3> target_position_m_{0.0, 0.0, 0.0};
   bool have_previous_raw_state_{false};
-  bool controller_initialized_{false};
-};
-
-class HdapiDevice
-{
-public:
-  void open(const std::string & device_name, ServoCore * servo_core)
-  {
-    if (is_open_) {
-      return;
-    }
-    if (device_name.empty()) {
-      throw std::runtime_error("Device name cannot be empty.");
-    }
-
-    device_handle_ = hdInitDevice(device_name.c_str());
-    throw_on_hd_error("Failed to initialize haptic device");
-
-    if (!hdIsEnabled(HD_FORCE_OUTPUT)) {
-      hdEnable(HD_FORCE_OUTPUT);
-    } else {
-      throw std::runtime_error("Failed to enable force output.");
-    }
-
-    hdScheduleAsynchronous(
-      &ServoCore::scheduler_callback, servo_core, HD_DEFAULT_SCHEDULER_PRIORITY);
-    throw_on_hd_error("Failed to schedule servo callback");
-
-    hdStartScheduler();
-    throw_on_hd_error("Failed to start scheduler");
-    is_open_ = true;
-  }
-
-  void close()
-  {
-    if (!is_open_) {
-      return;
-    }
-
-    hdStopScheduler();
-    hdDisable(HD_FORCE_OUTPUT);
-    hdDisableDevice(device_handle_);
-    device_handle_ = HD_INVALID_HANDLE;
-    is_open_ = false;
-  }
-
-  ~HdapiDevice() { close(); }
-
-private:
-  HHD device_handle_{HD_INVALID_HANDLE};
-  bool is_open_{false};
+  bool target_initialized_{false};
 };
 
 class TouchNode : public rclcpp::Node
 {
 public:
-  TouchNode()
-  : Node("touch_driver"), controller_loader_("touch_hardware", "touch_hardware::TouchController")
+  TouchNode() : Node("touch_driver")
   {
     declare_parameter<std::string>("device_name", "Default Device");
     declare_parameter<double>("publish_rate_hz", 250.0);
-    declare_parameter<std::string>("controller_plugin", "touch_controllers/NullController");
+    declare_parameter<int>("update_rate", 250);
+    declare_parameter<std::string>("frame_id", "touch_base");
+    declare_parameter<std::string>("child_frame_id", "touch_ee");
+    declare_parameter<std::string>(
+      "controller_plugin", "touch_controllers/ImpedanceController");
     declare_parameter<double>("max_force", 8.0);
     declare_parameter<std::vector<double>>("impedance_stiffness", {45.0, 45.0, 45.0});
     declare_parameter<std::vector<double>>("impedance_damping", {2.5, 2.5, 2.5});
 
     const std::string device_name = get_parameter("device_name").as_string();
     const double publish_rate_hz = get_parameter("publish_rate_hz").as_double();
+    const int update_rate = get_parameter("update_rate").as_int();
+    frame_id_ = get_parameter("frame_id").as_string();
+    child_frame_id_ = get_parameter("child_frame_id").as_string();
     const std::string controller_plugin = get_parameter("controller_plugin").as_string();
     const double max_force = get_parameter("max_force").as_double();
 
-    CommandState initial_command;
-    initial_command.impedance_stiffness = read_vec3_parameter("impedance_stiffness");
-    initial_command.impedance_damping = read_vec3_parameter("impedance_damping");
+    command_state_.impedance_stiffness = read_vec3_parameter("impedance_stiffness");
+    command_state_.impedance_damping = read_vec3_parameter("impedance_damping");
 
-    controller_ = controller_loader_.createSharedInstance(controller_plugin);
-    servo_core_ = std::make_unique<ServoCore>(controller_, max_force);
-    servo_core_->set_command(initial_command);
-    command_state_ = initial_command;
+    if (!controller_plugin.empty()) {
+      RCLCPP_INFO(
+        get_logger(), "Ignoring controller_plugin='%s'; touch_driver now uses built-in impedance "
+        "control in the HD loop.",
+        controller_plugin.c_str());
+    }
+
+    device_ = std::make_unique<GeomagicStyleDevice>(max_force);
+    device_->set_command(command_state_);
 
     joint_state_pub_ = create_publisher<sensor_msgs::msg::JointState>("/joint_states", 10);
     pose_pub_ = create_publisher<geometry_msgs::msg::PoseStamped>("/touch/state/pose", 10);
@@ -262,13 +309,12 @@ public:
     direct_wrench_sub_ = create_subscription<geometry_msgs::msg::WrenchStamped>(
       "/touch/command/direct_wrench", 10,
       [this](const geometry_msgs::msg::WrenchStamped::SharedPtr msg) {
-        const std::array<double, 3> ros_force = {
+        command_state_.direct_force_ros_n = {
           msg->wrench.force.x,
           msg->wrench.force.y,
           msg->wrench.force.z,
         };
-        command_state_.device_force_n = transform_vector_ros_to_device(ros_force);
-        servo_core_->set_command(command_state_);
+        device_->set_command(command_state_);
       });
 
     target_pose_sub_ = create_subscription<geometry_msgs::msg::PoseStamped>(
@@ -280,19 +326,20 @@ public:
           msg->pose.position.z,
         };
         command_state_.target_pose_valid = true;
-        servo_core_->set_command(command_state_);
+        device_->set_command(command_state_);
         RCLCPP_INFO(
           get_logger(), "Received target pose: [%.6f, %.6f, %.6f]",
           command_state_.target_position_m[0], command_state_.target_position_m[1],
           command_state_.target_position_m[2]);
       });
 
-    const auto publish_period = std::chrono::duration<double>(1.0 / std::max(publish_rate_hz, 1.0));
+    const double rate_hz = publish_rate_hz > 0.0 ? publish_rate_hz : static_cast<double>(update_rate);
+    const auto publish_period = std::chrono::duration<double>(1.0 / std::max(rate_hz, 1.0));
     publish_timer_ = create_wall_timer(
       std::chrono::duration_cast<std::chrono::nanoseconds>(publish_period),
       std::bind(&TouchNode::publish_state, this));
 
-    hdapi_device_.open(device_name, servo_core_.get());
+    device_->open(device_name);
   }
 
 private:
@@ -307,7 +354,11 @@ private:
 
   void publish_state()
   {
-    const StateSnapshot snapshot = servo_core_->latest_snapshot();
+    const ServoSnapshot snapshot = device_->latest_snapshot();
+    if (!snapshot.valid) {
+      return;
+    }
+
     const auto stamp = now();
     std::array<double, 6> previous_joint_positions{};
     const std::array<double, 6> * previous_joint_positions_ptr = nullptr;
@@ -327,11 +378,19 @@ private:
     joint_state.position.assign(state.joint_positions_rad.begin(), state.joint_positions_rad.end());
     joint_state.velocity.assign(
       state.joint_velocities_rad_s.begin(), state.joint_velocities_rad_s.end());
+    joint_state.effort = {
+      snapshot.joint_torque_nm[0],
+      snapshot.joint_torque_nm[1],
+      snapshot.joint_torque_nm[2],
+      snapshot.gimbal_torque_nm[0],
+      snapshot.gimbal_torque_nm[1],
+      snapshot.gimbal_torque_nm[2],
+    };
     joint_state_pub_->publish(joint_state);
 
     geometry_msgs::msg::PoseStamped pose;
     pose.header.stamp = stamp;
-    pose.header.frame_id = "touch_base";
+    pose.header.frame_id = frame_id_;
     pose.pose.position.x = state.position_m[0];
     pose.pose.position.y = state.position_m[1];
     pose.pose.position.z = state.position_m[2];
@@ -343,26 +402,28 @@ private:
 
     geometry_msgs::msg::TwistStamped twist;
     twist.header.stamp = stamp;
-    twist.header.frame_id = "touch_base";
+    twist.header.frame_id = child_frame_id_;
     twist.twist.linear.x = state.linear_velocity_m_s[0];
     twist.twist.linear.y = state.linear_velocity_m_s[1];
     twist.twist.linear.z = state.linear_velocity_m_s[2];
+    twist.twist.angular.x = snapshot.angular_velocity_rad_s[0];
+    twist.twist.angular.y = snapshot.angular_velocity_rad_s[1];
+    twist.twist.angular.z = snapshot.angular_velocity_rad_s[2];
     twist_pub_->publish(twist);
 
     geometry_msgs::msg::WrenchStamped wrench;
     wrench.header.stamp = stamp;
-    wrench.header.frame_id = "touch_base";
+    wrench.header.frame_id = frame_id_;
     wrench.wrench.force.x = commanded_force_ros[0];
     wrench.wrench.force.y = commanded_force_ros[1];
     wrench.wrench.force.z = commanded_force_ros[2];
     wrench_pub_->publish(wrench);
   }
 
-  pluginlib::ClassLoader<TouchController> controller_loader_;
-  std::shared_ptr<TouchController> controller_;
-  std::unique_ptr<ServoCore> servo_core_;
-  HdapiDevice hdapi_device_;
-  CommandState command_state_;
+  ServoCommand command_state_;
+  std::string frame_id_;
+  std::string child_frame_id_;
+  std::unique_ptr<GeomagicStyleDevice> device_;
 
   rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr joint_state_pub_;
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_;
