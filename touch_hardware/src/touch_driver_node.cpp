@@ -1,10 +1,12 @@
 #include <eigen3/Eigen/Dense>
 #include <atomic>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #include "geometry_msgs/msg/transform_stamped.hpp"
 #include "geometry_msgs/msg/twist_stamped.hpp"
@@ -14,25 +16,17 @@
 #include "tf2_ros/transform_broadcaster.h"
 
 #include "touch_hardware/device.hpp"
+#include "touch_hardware/touch_driver_parameters.hpp"
 
 namespace touch_hardware {
 class DeviceDriver : public rclcpp::Node {
 protected:
   static constexpr double MM2M = 1.e-3;
   static constexpr uint8_t DOF = 6;
+  static constexpr const char *FRAME_ID = "touch_base";
+  static constexpr const char *CHILD_FRAME_ID = "touch_ee";
 
 public:
-  struct DriverParams {
-    int update_rate;
-    std::string frame_id;
-    std::string child_frame_id;
-    std::string device_name;
-    bool impedance_enabled;
-    double max_force;
-    double Kx, Ky, Kz;
-    double Dx, Dy, Dz;
-  };
-
   struct DeviceState {
     sensor_msgs::msg::JointState joint_state;
     geometry_msgs::msg::TwistStamped twist_stamped;
@@ -41,8 +35,9 @@ public:
 public:
   DeviceDriver(const rclcpp::NodeOptions &options)
       : Node("touch_driver", options), q_prev_set_(false) {
-    this->declare_params_();
-    this->get_params_();
+    param_listener_ = std::make_shared<ParamListener>(this->get_node_parameters_interface());
+    params_ = param_listener_->get_params();
+    this->validate_params_();
     this->init_msgs_();
     this->init_pubs_(); // cheers ;)
     this->init_subs_();
@@ -84,7 +79,8 @@ protected:
   geometry_msgs::msg::TwistStamped ts_;
 
   // Parameters
-  DriverParams params_;
+  std::shared_ptr<ParamListener> param_listener_;
+  Params params_;
 
   // Device state
   DeviceState state_;
@@ -102,43 +98,21 @@ protected:
   std::unique_ptr<Device> device_;
 
 protected:
-  void declare_params_() {
-    this->declare_parameter("update_rate", 200);
-    this->declare_parameter("device_name", "");
-    this->declare_parameter("impedance_enabled", true);
-    this->declare_parameter("max_force", 8.0);
-    this->declare_parameter("Kx", 45.0);
-    this->declare_parameter("Ky", 45.0);
-    this->declare_parameter("Kz", 45.0);
-    this->declare_parameter("Dx", 2.5);
-    this->declare_parameter("Dy", 2.5);
-    this->declare_parameter("Dz", 2.5);
-  };
-  void get_params_() {
-    this->get_parameter("update_rate", params_.update_rate);
-    this->get_parameter("frame_id", params_.frame_id);
-    this->get_parameter("child_frame_id", params_.child_frame_id);
-    this->get_parameter("device_name", params_.device_name);
-    this->get_parameter("impedance_enabled", params_.impedance_enabled);
-    this->get_parameter("max_force", params_.max_force);
-    this->get_parameter("Kx", params_.Kx);
-    this->get_parameter("Ky", params_.Ky);
-    this->get_parameter("Kz", params_.Kz);
-    this->get_parameter("Dx", params_.Dx);
-    this->get_parameter("Dy", params_.Dy);
-    this->get_parameter("Dz", params_.Dz);
+  static std::array<double, 3> to_array3_(const std::vector<double> &values) {
+    return {values[0], values[1], values[2]};
+  }
+
+  void validate_params_() {
     if (params_.device_name.empty()) {
       std::string err = "No device_name given, shutting down.";
       RCLCPP_ERROR(this->get_logger(), err.c_str());
       throw std::runtime_error(err);
     }
     RCLCPP_INFO(this->get_logger(), "*** Parameters");
-    RCLCPP_INFO(this->get_logger(), "*   update_rate: %i Hz", params_.update_rate);
-    RCLCPP_INFO(this->get_logger(), "*   frame_id: %s", params_.frame_id.c_str());
-    RCLCPP_INFO(this->get_logger(), "*   child_frame_id: %s", params_.child_frame_id.c_str());
+    RCLCPP_INFO(this->get_logger(), "*   update_rate: %ld Hz", params_.update_rate);
+    RCLCPP_INFO(this->get_logger(), "*   frame_id: %s", FRAME_ID);
+    RCLCPP_INFO(this->get_logger(), "*   child_frame_id: %s", CHILD_FRAME_ID);
     RCLCPP_INFO(this->get_logger(), "*   controller: builtin impedance");
-    RCLCPP_INFO(this->get_logger(), "*   impedance_enabled: %s",
-                params_.impedance_enabled ? "true" : "false");
   };
   void init_msgs_() {
     // Joint states
@@ -169,10 +143,9 @@ protected:
   };
   void init_device_params_() {
     auto &state = device_->get_state();
-    state.impedance_enabled = params_.impedance_enabled;
     state.max_force = params_.max_force;
-    state.command.impedance_stiffness = {params_.Kx, params_.Ky, params_.Kz};
-    state.command.impedance_damping = {params_.Dx, params_.Dy, params_.Dz};
+    state.command.impedance_stiffness = to_array3_(params_.K);
+    state.command.impedance_damping = to_array3_(params_.D);
   };
   void on_update_() {
     // get the current state
@@ -181,8 +154,8 @@ protected:
 
     // Pack transform stamp and translation
     tf_stamped_.header.stamp = stamp;
-    tf_stamped_.header.frame_id = params_.frame_id;
-    tf_stamped_.child_frame_id = params_.child_frame_id;
+    tf_stamped_.header.frame_id = FRAME_ID;
+    tf_stamped_.child_frame_id = CHILD_FRAME_ID;
     tf_stamped_.transform.translation.x = MM2M * state.transform[12];
     tf_stamped_.transform.translation.y = MM2M * state.transform[13];
     tf_stamped_.transform.translation.z = MM2M * state.transform[14];
@@ -237,7 +210,7 @@ protected:
 
     // Pack twist stamped
     ts_.header.stamp = stamp;
-    ts_.header.frame_id = params_.child_frame_id;
+    ts_.header.frame_id = CHILD_FRAME_ID;
     ts_.twist.linear.x = MM2M * state.velocity[0];
     ts_.twist.linear.y = MM2M * state.velocity[1];
     ts_.twist.linear.z = MM2M * state.velocity[2];

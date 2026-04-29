@@ -11,12 +11,18 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 find_package(ament_cmake REQUIRED)
 find_package(eigen3_cmake_module REQUIRED)
 find_package(Eigen3 REQUIRED)
+find_package(generate_parameter_library REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(OpenHaptics REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_components REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
+
+generate_parameter_library(
+  touch_driver_parameters
+  src/touch_driver_parameters.yaml
+)
 
 add_library(touch_hardware_driver SHARED
   src/device.cpp
@@ -49,6 +55,7 @@ ament_target_dependencies(touch_driver_component
 )
 target_link_libraries(touch_driver_component
   touch_hardware_driver
+  touch_driver_parameters
 )
 rclcpp_components_register_node(
   touch_driver_component
@@ -62,7 +69,7 @@ install(DIRECTORY include/
 install(DIRECTORY cmake/
   DESTINATION share/${PROJECT_NAME}/cmake
 )
-install(TARGETS touch_hardware_driver touch_driver_component
+install(TARGETS touch_hardware_driver touch_driver_component touch_driver_parameters
   EXPORT export_${PROJECT_NAME}
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
@@ -75,6 +82,7 @@ install(TARGETS touch_driver
 ament_export_include_directories(include)
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
 ament_export_dependencies(Eigen3)
+ament_export_dependencies(generate_parameter_library)
 ament_export_dependencies(geometry_msgs)
 ament_export_dependencies(rclcpp)
 ament_export_dependencies(rclcpp_components)

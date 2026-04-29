@@ -2,13 +2,6 @@ touch_driver:
   ros__parameters:
     device_name: Default Device
     update_rate: 200
-    frame_id: touch_x_base
-    child_frame_id: touch_x_ee
-    impedance_enabled: true
     max_force: 1.0
-    Kx: 45.0
-    Ky: 45.0
-    Kz: 45.0
-    Dx: 2.5
-    Dy: 2.5
-    Dz: 2.5
+    K: [45.0, 45.0, 45.0]
+    D: [2.5, 2.5, 2.5]

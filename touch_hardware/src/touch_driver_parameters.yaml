@@ -1,0 +1,36 @@
+touch_hardware:
+  update_rate:
+    type: int
+    default_value: 200
+    read_only: true
+    description: "Driver publish/update rate in Hz."
+    validation:
+      bounds<>: [0, 1000]
+  device_name:
+    type: string
+    default_value: "Default Device"
+    read_only: true
+    description: "OpenHaptics device name."
+  max_force:
+    type: double
+    default_value: 3.3
+    read_only: true
+    description: "Maximum commanded device force in newtons."
+    validation:
+      bounds<>: [0.0, 3.3]
+  K:
+    type: double_array
+    default_value: [45.0, 45.0, 45.0]
+    read_only: true
+    description: "Device-frame impedance stiffness for x/y/z."
+    validation:
+      fixed_size<>: [3]
+      lower_element_bounds<>: [0.0]
+  D:
+    type: double_array
+    default_value: [2.5, 2.5, 2.5]
+    read_only: true
+    description: "Device-frame impedance damping for x/y/z."
+    validation:
+      fixed_size<>: [3]
+      lower_element_bounds<>: [0.0]

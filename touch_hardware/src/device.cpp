@@ -143,10 +143,6 @@ HDCallbackCode HDCALLBACK Device::on_device_state_(void *data) {
   hdGetDoublev(HD_CURRENT_GIMBAL_TORQUE, state->gimbal_torque);
 
   CommandState command = state->command;
-  if (!state->impedance_enabled) {
-    command.impedance_stiffness = {0., 0., 0.};
-    command.impedance_damping = {0., 0., 0.};
-  }
   if (!command.target_pose_valid) {
     command.target_position_m = {0., 0., 0.};
   }

@@ -32,7 +32,6 @@ public:
     HDdouble commanded_force[3]{0., 0., 0.};
     HDdouble max_force{8.};
 
-    bool impedance_enabled{true};
     CommandState command;
 
     std::atomic<std::uint64_t> callback_count{0};
