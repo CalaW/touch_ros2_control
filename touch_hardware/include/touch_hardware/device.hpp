@@ -1,23 +1,25 @@
 #ifndef TOUCH_HARDWARE__DEVICE_HPP_
 #define TOUCH_HARDWARE__DEVICE_HPP_
 
-#include <atomic>
-#include <cstdint>
-#include <memory>
-#include <stdexcept>
-#include <string>
+#include "touch_hardware/types.hpp"
 
 #include <HD/hdDefines.h>
 #include <HD/hdDevice.h>
 #include <HD/hdScheduler.h>
 #include <HDU/hduError.h>
 
-#include "touch_hardware/types.hpp"
+#include <atomic>
+#include <cstdint>
+#include <memory>
+#include <string>
 
-namespace touch_hardware {
-class Device {
+namespace touch_hardware
+{
+class Device
+{
 public:
-  struct State {
+  struct State
+  {
     HDdouble position[3];
     HDdouble velocity[3];
     HDdouble transform[16];
@@ -39,10 +41,10 @@ public:
 
 public:
   Device() : is_open_(false) {}
-  explicit Device(const std::string &device_name) : is_open_(false) { this->open(device_name); }
+  explicit Device(const std::string & device_name) : is_open_(false) { this->open(device_name); }
   ~Device() { this->close(); }
 
-  inline State &get_state() { return state_; }
+  inline State & get_state() { return state_; }
 
 protected:
   std::unique_ptr<HHD> hHD_ptr_;
@@ -51,12 +53,12 @@ protected:
   State state_{};
 
 public:
-  void open(const std::string &device_name);
+  void open(const std::string & device_name);
   void close();
 
 protected:
-  static HDCallbackCode HDCALLBACK on_device_state_(void *data);
+  static HDCallbackCode HDCALLBACK on_device_state_(void * data);
 };
-} // namespace touch_hardware
+}  // namespace touch_hardware
 
-#endif // TOUCH_HARDWARE__DEVICE_HPP_
+#endif  // TOUCH_HARDWARE__DEVICE_HPP_

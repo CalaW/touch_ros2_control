@@ -59,9 +59,8 @@ inline void device_transform_to_ros_pose(
     transform[8], transform[9], transform[10];
   // clang-format on
 
-  const Eigen::Matrix3d rotation_ros =
-    detail::device_to_ros_basis() * rotation_device.transpose() *
-    detail::device_to_ros_basis().transpose();
+  const Eigen::Matrix3d rotation_ros = detail::device_to_ros_basis() * rotation_device.transpose() *
+                                       detail::device_to_ros_basis().transpose();
   Eigen::Quaterniond ros_orientation(rotation_ros);
   ros_orientation.normalize();
 
@@ -103,8 +102,7 @@ inline std::array<double, 6> calculate_joint_velocities_rad_s(
 }
 
 inline DeviceState transform_raw_state_to_ros(
-  const RawDeviceState & state, const std::array<double, 6> * previous_joint_positions,
-  double dt)
+  const RawDeviceState & state, const std::array<double, 6> * previous_joint_positions, double dt)
 {
   DeviceState ros_state;
   device_transform_to_ros_pose(state.transform, ros_state.position_m, ros_state.orientation_xyzw);

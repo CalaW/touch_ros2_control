@@ -1,18 +1,23 @@
 #include "touch_hardware/device.hpp"
+
 #include "touch_hardware/impedance_math.hpp"
+
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <thread>
 
-namespace touch_hardware {
-namespace {
+namespace touch_hardware
+{
+namespace
+{
 constexpr auto DEVICE_OPEN_SETTLE_DELAY = std::chrono::seconds(1);
 constexpr auto DEVICE_CLOSE_SETTLE_DELAY = std::chrono::seconds(1);
 
-void clamp_force(HDdouble force[3], HDdouble max_force) {
+void clamp_force(HDdouble force[3], HDdouble max_force)
+{
   const double magnitude =
-      std::sqrt(force[0] * force[0] + force[1] * force[1] + force[2] * force[2]);
+    std::sqrt(force[0] * force[0] + force[1] * force[1] + force[2] * force[2]);
   if (magnitude <= max_force || magnitude <= 0.) {
     return;
   }
@@ -23,7 +28,8 @@ void clamp_force(HDdouble force[3], HDdouble max_force) {
   }
 }
 
-RawDeviceState to_raw_device_state(const Device::State &state) {
+RawDeviceState to_raw_device_state(const Device::State & state)
+{
   RawDeviceState raw_state;
   for (int i = 0; i < 3; ++i) {
     raw_state.velocity_mm_s[i] = state.velocity[i];
@@ -36,7 +42,8 @@ RawDeviceState to_raw_device_state(const Device::State &state) {
   return raw_state;
 }
 
-HDCallbackCode HDCALLBACK zero_force_callback(void *) {
+HDCallbackCode HDCALLBACK zero_force_callback(void *)
+{
   HDdouble zero_force[3] = {0., 0., 0.};
   const HHD current_device = hdGetCurrentDevice();
   hdBeginFrame(current_device);
@@ -44,11 +51,11 @@ HDCallbackCode HDCALLBACK zero_force_callback(void *) {
   hdEndFrame(current_device);
   return HD_CALLBACK_DONE;
 }
-} // namespace
+}  // namespace
 
-void Device::open(const std::string &device_name) {
-  if (is_open_)
-    return;
+void Device::open(const std::string & device_name)
+{
+  if (is_open_) return;
   if (device_name.empty()) {
     throw std::runtime_error("No emtpy device_name allowed.");
   }
@@ -76,7 +83,7 @@ void Device::open(const std::string &device_name) {
   state_.callback_count.store(0, std::memory_order_relaxed);
   // Start state publisher
   scheduler_handle_ =
-      hdScheduleAsynchronous(this->on_device_state_, &state_, HD_DEFAULT_SCHEDULER_PRIORITY);
+    hdScheduleAsynchronous(this->on_device_state_, &state_, HD_DEFAULT_SCHEDULER_PRIORITY);
   if (HD_DEVICE_ERROR(error = hdGetError())) {
     scheduler_handle_ = 0;
     hdDisable(HD_FORCE_OUTPUT);
@@ -101,9 +108,9 @@ void Device::open(const std::string &device_name) {
   return;
 }
 
-void Device::close() {
-  if (!is_open_)
-    return;
+void Device::close()
+{
+  if (!is_open_) return;
   // Commit one final zero-force frame while the scheduler is still running, then
   // stop and unschedule explicitly. This avoids leaving a stale force command in
   // the HDAPI frame state across process restarts.
@@ -122,9 +129,10 @@ void Device::close() {
   std::this_thread::sleep_for(DEVICE_CLOSE_SETTLE_DELAY);
 }
 
-HDCallbackCode HDCALLBACK Device::on_device_state_(void *data) {
+HDCallbackCode HDCALLBACK Device::on_device_state_(void * data)
+{
   // Setup
-  State *state = (State *)data;
+  State * state = (State *)data;
   state->callback_count.fetch_add(1, std::memory_order_relaxed);
 
   // Begin frame
@@ -147,11 +155,11 @@ HDCallbackCode HDCALLBACK Device::on_device_state_(void *data) {
     command.target_position_m = {0., 0., 0.};
   }
 
-  const ForceCommand force_command = compute_impedance_force_device(to_raw_device_state(*state), command);
+  const ForceCommand force_command =
+    compute_impedance_force_device(to_raw_device_state(*state), command);
   for (int i = 0; i < 3; ++i) {
-    state->commanded_force[i] = std::isfinite(force_command.device_force_n[i])
-                                    ? force_command.device_force_n[i]
-                                    : 0.;
+    state->commanded_force[i] =
+      std::isfinite(force_command.device_force_n[i]) ? force_command.device_force_n[i] : 0.;
   }
 
   clamp_force(state->commanded_force, state->max_force);
@@ -171,4 +179,4 @@ HDCallbackCode HDCALLBACK Device::on_device_state_(void *data) {
 
   return HD_CALLBACK_CONTINUE;
 }
-} // namespace touch_hardware
+}  // namespace touch_hardware

@@ -1,6 +1,17 @@
+#include "rclcpp/rclcpp.hpp"
+#include "tf2_ros/transform_broadcaster.h"
+#include "touch_hardware/device.hpp"
+#include "touch_hardware/touch_driver_parameters.hpp"
+
 #include <eigen3/Eigen/Dense>
-#include <atomic>
+
+#include "geometry_msgs/msg/transform_stamped.hpp"
+#include "geometry_msgs/msg/twist_stamped.hpp"
+#include "geometry_msgs/msg/wrench.hpp"
+#include "sensor_msgs/msg/joint_state.hpp"
+
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <memory>
@@ -8,52 +19,48 @@
 #include <string>
 #include <vector>
 
-#include "geometry_msgs/msg/transform_stamped.hpp"
-#include "geometry_msgs/msg/twist_stamped.hpp"
-#include "geometry_msgs/msg/wrench.hpp"
-#include "rclcpp/rclcpp.hpp"
-#include "sensor_msgs/msg/joint_state.hpp"
-#include "tf2_ros/transform_broadcaster.h"
-
-#include "touch_hardware/device.hpp"
-#include "touch_hardware/touch_driver_parameters.hpp"
-
-namespace touch_hardware {
-class DeviceDriver : public rclcpp::Node {
+namespace touch_hardware
+{
+class DeviceDriver : public rclcpp::Node
+{
 protected:
   static constexpr double MM2M = 1.e-3;
   static constexpr uint8_t DOF = 6;
-  static constexpr const char *FRAME_ID = "touch_base";
-  static constexpr const char *CHILD_FRAME_ID = "touch_ee";
+  static constexpr const char * FRAME_ID = "touch_base";
+  static constexpr const char * CHILD_FRAME_ID = "touch_ee";
 
 public:
-  struct DeviceState {
+  struct DeviceState
+  {
     sensor_msgs::msg::JointState joint_state;
     geometry_msgs::msg::TwistStamped twist_stamped;
   };
 
 public:
-  DeviceDriver(const rclcpp::NodeOptions &options)
-      : Node("touch_driver", options), q_prev_set_(false) {
+  DeviceDriver(const rclcpp::NodeOptions & options)
+  : Node("touch_driver", options), q_prev_set_(false)
+  {
     param_listener_ = std::make_shared<ParamListener>(this->get_node_parameters_interface());
     params_ = param_listener_->get_params();
     this->validate_params_();
     this->init_msgs_();
-    this->init_pubs_(); // cheers ;)
+    this->init_pubs_();  // cheers ;)
     this->init_subs_();
     ctrl_timer_ = this->create_wall_timer(
-        std::chrono::milliseconds(static_cast<int64_t>(1.e3 / params_.update_rate)),
-        std::bind(&DeviceDriver::on_update_, this));
+      std::chrono::milliseconds(static_cast<int64_t>(1.e3 / params_.update_rate)),
+      std::bind(&DeviceDriver::on_update_, this));
     RCLCPP_INFO(this->get_logger(), "Instantiating device %s...", params_.device_name.c_str());
     device_ = std::make_unique<Device>();
     this->init_device_params_();
     device_->open(params_.device_name);
-    RCLCPP_INFO(this->get_logger(), "Done. haptic callbacks observed: %llu",
-                static_cast<unsigned long long>(
-                    device_->get_state().callback_count.load(std::memory_order_relaxed)));
+    RCLCPP_INFO(
+      this->get_logger(), "Done. haptic callbacks observed: %llu",
+      static_cast<unsigned long long>(
+        device_->get_state().callback_count.load(std::memory_order_relaxed)));
   };
 
-  ~DeviceDriver() override {
+  ~DeviceDriver() override
+  {
     // Stop ROS callbacks before closing the haptic device so no timer or
     // subscription can touch Device::State while the HDAPI scheduler is being
     // stopped and the device handle is being released.
@@ -98,11 +105,13 @@ protected:
   std::unique_ptr<Device> device_;
 
 protected:
-  static std::array<double, 3> to_array3_(const std::vector<double> &values) {
+  static std::array<double, 3> to_array3_(const std::vector<double> & values)
+  {
     return {values[0], values[1], values[2]};
   }
 
-  void validate_params_() {
+  void validate_params_()
+  {
     if (params_.device_name.empty()) {
       std::string err = "No device_name given, shutting down.";
       RCLCPP_ERROR(this->get_logger(), err.c_str());
@@ -114,42 +123,45 @@ protected:
     RCLCPP_INFO(this->get_logger(), "*   child_frame_id: %s", CHILD_FRAME_ID);
     RCLCPP_INFO(this->get_logger(), "*   controller: builtin impedance");
   };
-  void init_msgs_() {
+  void init_msgs_()
+  {
     // Joint states
     js_.effort.resize(DOF, 0.);
     js_.position.resize(DOF, 0.);
     js_.velocity.resize(DOF, 0.);
-    js_.name = {"waist",  "shoulder",  "elbow",
-                "yaw", "pitch", "roll"};
+    js_.name = {"waist", "shoulder", "elbow", "yaw", "pitch", "roll"};
   }
-  void init_pubs_() {
-    js_pub_ = this->create_publisher<sensor_msgs::msg::JointState>("joint_states",
-                                                                   rclcpp::SensorDataQoS());
-    ts_pub_ = this->create_publisher<geometry_msgs::msg::TwistStamped>("twist",
-                                                                       rclcpp::SensorDataQoS());
+  void init_pubs_()
+  {
+    js_pub_ =
+      this->create_publisher<sensor_msgs::msg::JointState>("joint_states", rclcpp::SensorDataQoS());
+    ts_pub_ =
+      this->create_publisher<geometry_msgs::msg::TwistStamped>("twist", rclcpp::SensorDataQoS());
     tf_bc_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
   };
-  void init_subs_() {
+  void init_subs_()
+  {
     w_sub_ = this->create_subscription<geometry_msgs::msg::Wrench>(
-        "command/wrench", rclcpp::SensorDataQoS(),
-        [this](geometry_msgs::msg::Wrench::SharedPtr msg) {
-          auto &state = device_->get_state();
-          state.command.device_force_n = {
-              msg->force.x,
-              msg->force.y,
-              msg->force.z,
-          };
-        });
+      "command/wrench", rclcpp::SensorDataQoS(), [this](geometry_msgs::msg::Wrench::SharedPtr msg) {
+        auto & state = device_->get_state();
+        state.command.device_force_n = {
+          msg->force.x,
+          msg->force.y,
+          msg->force.z,
+        };
+      });
   };
-  void init_device_params_() {
-    auto &state = device_->get_state();
+  void init_device_params_()
+  {
+    auto & state = device_->get_state();
     state.max_force = params_.max_force;
     state.command.impedance_stiffness = to_array3_(params_.K);
     state.command.impedance_damping = to_array3_(params_.D);
   };
-  void on_update_() {
+  void on_update_()
+  {
     // get the current state
-    const auto &state = device_->get_state();
+    const auto & state = device_->get_state();
     const auto stamp = this->get_clock()->now();
 
     // Pack transform stamp and translation
@@ -172,7 +184,7 @@ protected:
     R(2, 1) = state.transform[9];
     R(2, 2) = state.transform[10];
 
-    Eigen::Quaterniond quat(R.transpose()); // require transpose otherwise rotation is inverted
+    Eigen::Quaterniond quat(R.transpose());  // require transpose otherwise rotation is inverted
     tf_stamped_.transform.rotation.x = quat.x();
     tf_stamped_.transform.rotation.y = quat.y();
     tf_stamped_.transform.rotation.z = quat.z();
@@ -223,7 +235,7 @@ protected:
     ts_pub_->publish(ts_);
   };
 };
-} // namespace touch_hardware
+}  // namespace touch_hardware
 
 #include <rclcpp_components/register_node_macro.hpp>
 RCLCPP_COMPONENTS_REGISTER_NODE(touch_hardware::DeviceDriver)
