@@ -1,5 +1,5 @@
-#ifndef TOUCH_HARDWARE__CONTROLLER_BASE_HPP_
-#define TOUCH_HARDWARE__CONTROLLER_BASE_HPP_
+#ifndef TOUCH_HARDWARE__TYPES_HPP_
+#define TOUCH_HARDWARE__TYPES_HPP_
 
 #include <array>
 
@@ -37,17 +37,6 @@ struct ForceCommand
   std::array<double, 3> device_force_n{0.0, 0.0, 0.0};
 };
 
-class TouchController
-{
-public:
-  virtual ~TouchController();
-
-  virtual void reset(const RawDeviceState & state) = 0;
-
-  virtual ForceCommand compute_force(
-    const RawDeviceState & state, const CommandState & command, double dt) = 0;
-};
-
 }  // namespace touch_hardware
 
-#endif  // TOUCH_HARDWARE__CONTROLLER_BASE_HPP_
+#endif  // TOUCH_HARDWARE__TYPES_HPP_

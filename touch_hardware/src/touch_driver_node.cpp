@@ -1,453 +1,256 @@
-#include "touch_hardware/controller_base.hpp"
-#include "touch_hardware/device_transforms.hpp"
-
-#include <rclcpp/rclcpp.hpp>
-
-#include <geometry_msgs/msg/pose_stamped.hpp>
-#include <geometry_msgs/msg/twist_stamped.hpp>
-#include <geometry_msgs/msg/wrench_stamped.hpp>
-#include <sensor_msgs/msg/joint_state.hpp>
-
-#include <HD/hd.h>
-#include <HD/hdDefines.h>
-#include <HD/hdDevice.h>
-#include <HD/hdScheduler.h>
-#include <HDU/hduError.h>
-
-#include <algorithm>
-#include <array>
+#include <eigen3/Eigen/Dense>
 #include <atomic>
-#include <chrono>
 #include <cmath>
-#include <cstdio>
-#include <functional>
+#include <cstdint>
 #include <memory>
 #include <stdexcept>
 #include <string>
-#include <vector>
 
-namespace touch_hardware
-{
-namespace
-{
+#include "geometry_msgs/msg/transform_stamped.hpp"
+#include "geometry_msgs/msg/twist_stamped.hpp"
+#include "geometry_msgs/msg/wrench.hpp"
+#include "rclcpp/rclcpp.hpp"
+#include "sensor_msgs/msg/joint_state.hpp"
+#include "tf2_ros/transform_broadcaster.h"
 
-using Clock = std::chrono::steady_clock;
+#include "touch_hardware/device.hpp"
 
-struct ServoCommand
-{
-  std::array<double, 3> direct_force_ros_n{0.0, 0.0, 0.0};
-  std::array<double, 3> target_position_m{0.0, 0.0, 0.0};
-  std::array<double, 3> impedance_stiffness{45.0, 45.0, 45.0};
-  std::array<double, 3> impedance_damping{2.5, 2.5, 2.5};
-  bool target_pose_valid{false};
-};
+namespace touch_hardware {
+class DeviceDriver : public rclcpp::Node {
+protected:
+  static constexpr double MM2M = 1.e-3;
+  static constexpr uint8_t DOF = 6;
 
-struct ServoSnapshot
-{
-  RawDeviceState raw_state;
-  RawDeviceState previous_raw_state;
-  std::array<double, 3> angular_velocity_rad_s{0.0, 0.0, 0.0};
-  std::array<double, 3> measured_force_device_n{0.0, 0.0, 0.0};
-  std::array<double, 3> measured_torque_nm{0.0, 0.0, 0.0};
-  std::array<double, 3> joint_torque_nm{0.0, 0.0, 0.0};
-  std::array<double, 3> gimbal_torque_nm{0.0, 0.0, 0.0};
-  std::array<double, 3> commanded_device_force_n{0.0, 0.0, 0.0};
-  double sample_period_s{0.0};
-  bool have_previous_raw_state{false};
-  bool valid{false};
-};
-
-template <typename T>
-class DoubleBuffer
-{
 public:
-  void write(const T & value)
-  {
-    const int next_index = 1 - index_.load(std::memory_order_relaxed);
-    values_[next_index] = value;
-    index_.store(next_index, std::memory_order_release);
-  }
+  struct DriverParams {
+    int update_rate;
+    std::string frame_id;
+    std::string child_frame_id;
+    std::string device_name;
+    bool impedance_enabled;
+    double max_force;
+    double Kx, Ky, Kz;
+    double Dx, Dy, Dz;
+  };
 
-  T read() const { return values_[index_.load(std::memory_order_acquire)]; }
-
-private:
-  std::array<T, 2> values_{};
-  std::atomic<int> index_{0};
-};
-
-void throw_on_hd_error(const std::string & message)
-{
-  HDErrorInfo error;
-  if (HD_DEVICE_ERROR(error = hdGetError())) {
-    throw std::runtime_error(message + ": " + hdGetErrorString(error.errorCode));
-  }
-}
-
-class GeomagicStyleDevice
-{
-public:
-  explicit GeomagicStyleDevice(double max_force) : max_force_(max_force) {}
-
-  void set_command(const ServoCommand & command) { command_buffer_.write(command); }
-
-  ServoSnapshot latest_snapshot() const { return snapshot_buffer_.read(); }
-
-  void open(const std::string & device_name)
-  {
-    if (is_open_) {
-      return;
-    }
-    if (device_name.empty()) {
-      throw std::runtime_error("No empty device_name allowed.");
-    }
-
-    device_handle_ = std::make_unique<HHD>(hdInitDevice(device_name.c_str()));
-    throw_on_hd_error("Failed to initialize haptic device");
-
-    if (!hdIsEnabled(HD_FORCE_OUTPUT)) {
-      hdEnable(HD_FORCE_OUTPUT);
-    } else {
-      throw std::runtime_error("Failed to enable force output.");
-    }
-
-    hdScheduleAsynchronous(
-      &GeomagicStyleDevice::scheduler_callback, this, HD_DEFAULT_SCHEDULER_PRIORITY);
-    throw_on_hd_error("Failed to schedule servo callback");
-
-    hdStartScheduler();
-    throw_on_hd_error("Failed to start scheduler");
-    is_open_ = true;
-  }
-
-  void close()
-  {
-    if (!is_open_) {
-      return;
-    }
-
-    hdStopScheduler();
-    hdDisable(HD_FORCE_OUTPUT);
-    hdDisableDevice(*device_handle_);
-    device_handle_.reset();
-    is_open_ = false;
-  }
-
-  ~GeomagicStyleDevice() { close(); }
-
-private:
-  static HDCallbackCode HDCALLBACK scheduler_callback(void * data)
-  {
-    return static_cast<GeomagicStyleDevice *>(data)->tick();
-  }
-
-  HDCallbackCode tick()
-  {
-    const auto now = Clock::now();
-    double dt = 0.001;
-    if (last_tick_time_.time_since_epoch().count() != 0) {
-      dt = std::chrono::duration<double>(now - last_tick_time_).count();
-      if (dt <= 0.0) {
-        dt = 0.001;
-      }
-    }
-    last_tick_time_ = now;
-
-    RawDeviceState raw_state;
-    std::array<double, 3> position_mm{0.0, 0.0, 0.0};
-    std::array<double, 3> angular_velocity_rad_s{0.0, 0.0, 0.0};
-    std::array<double, 3> measured_force_device_n{0.0, 0.0, 0.0};
-    std::array<double, 3> measured_torque_nm{0.0, 0.0, 0.0};
-    std::array<double, 3> joint_torque_nm{0.0, 0.0, 0.0};
-    std::array<double, 3> gimbal_torque_nm{0.0, 0.0, 0.0};
-
-    hdBeginFrame(hdGetCurrentDevice());
-
-    hdGetDoublev(HD_CURRENT_POSITION, position_mm.data());
-    hdGetDoublev(HD_CURRENT_VELOCITY, raw_state.velocity_mm_s.data());
-    hdGetDoublev(HD_CURRENT_TRANSFORM, raw_state.transform.data());
-    hdGetDoublev(HD_CURRENT_ANGULAR_VELOCITY, angular_velocity_rad_s.data());
-    hdGetDoublev(HD_CURRENT_JOINT_ANGLES, raw_state.arm_joint_angles_rad.data());
-    hdGetDoublev(HD_CURRENT_GIMBAL_ANGLES, raw_state.gimbal_angles_rad.data());
-    hdGetDoublev(HD_CURRENT_FORCE, measured_force_device_n.data());
-    hdGetDoublev(HD_CURRENT_TORQUE, measured_torque_nm.data());
-    hdGetDoublev(HD_CURRENT_JOINT_TORQUE, joint_torque_nm.data());
-    hdGetDoublev(HD_CURRENT_GIMBAL_TORQUE, gimbal_torque_nm.data());
-
-    const auto ros_state = transform_raw_state_to_ros(raw_state, nullptr, 0.0);
-    if (!target_initialized_) {
-      target_position_m_ = ros_state.position_m;
-      target_initialized_ = true;
-    }
-
-    const ServoCommand command = command_buffer_.read();
-    if (command.target_pose_valid) {
-      target_position_m_ = command.target_position_m;
-    }
-
-    std::array<double, 3> commanded_force_ros_n = command.direct_force_ros_n;
-    for (std::size_t i = 0; i < commanded_force_ros_n.size(); ++i) {
-      commanded_force_ros_n[i] +=
-        command.impedance_stiffness[i] * (target_position_m_[i] - ros_state.position_m[i]) -
-        command.impedance_damping[i] * ros_state.linear_velocity_m_s[i];
-    }
-
-    std::array<double, 3> commanded_force_device_n =
-      transform_vector_ros_to_device(commanded_force_ros_n);
-    sanitize_force(commanded_force_device_n);
-    clamp_force(commanded_force_device_n);
-
-    hdSetDoublev(HD_CURRENT_FORCE, commanded_force_device_n.data());
-    hdEndFrame(hdGetCurrentDevice());
-
-    HDErrorInfo error;
-    if (HD_DEVICE_ERROR(error = hdGetError())) {
-      hduPrintError(stderr, &error, "Error during main scheduler callback\n");
-      if (hduIsSchedulerError(&error)) {
-        return HD_CALLBACK_DONE;
-      }
-    }
-
-    ServoSnapshot snapshot;
-    snapshot.raw_state = raw_state;
-    snapshot.previous_raw_state = previous_raw_state_;
-    snapshot.angular_velocity_rad_s = transform_vector_device_to_ros(angular_velocity_rad_s);
-    snapshot.measured_force_device_n = measured_force_device_n;
-    snapshot.measured_torque_nm = measured_torque_nm;
-    snapshot.joint_torque_nm = joint_torque_nm;
-    snapshot.gimbal_torque_nm = gimbal_torque_nm;
-    snapshot.commanded_device_force_n = commanded_force_device_n;
-    snapshot.sample_period_s = dt;
-    snapshot.have_previous_raw_state = have_previous_raw_state_;
-    snapshot.valid = true;
-    snapshot_buffer_.write(snapshot);
-
-    previous_raw_state_ = raw_state;
-    have_previous_raw_state_ = true;
-    (void)position_mm;
-
-    return HD_CALLBACK_CONTINUE;
-  }
-
-  void sanitize_force(std::array<double, 3> & force) const
-  {
-    for (double & value : force) {
-      if (!std::isfinite(value)) {
-        value = 0.0;
-      }
-    }
-  }
-
-  void clamp_force(std::array<double, 3> & force) const
-  {
-    const double magnitude =
-      std::sqrt(force[0] * force[0] + force[1] * force[1] + force[2] * force[2]);
-    if (magnitude <= max_force_ || magnitude <= 0.0) {
-      return;
-    }
-
-    const double scale = max_force_ / magnitude;
-    for (double & value : force) {
-      value *= scale;
-    }
-  }
-
-  std::unique_ptr<HHD> device_handle_;
-  bool is_open_{false};
-  double max_force_;
-  DoubleBuffer<ServoCommand> command_buffer_;
-  DoubleBuffer<ServoSnapshot> snapshot_buffer_;
-  Clock::time_point last_tick_time_{};
-  RawDeviceState previous_raw_state_{};
-  std::array<double, 3> target_position_m_{0.0, 0.0, 0.0};
-  bool have_previous_raw_state_{false};
-  bool target_initialized_{false};
-};
-
-class TouchNode : public rclcpp::Node
-{
-public:
-  TouchNode() : Node("touch_driver")
-  {
-    declare_parameter<std::string>("device_name", "Default Device");
-    declare_parameter<double>("publish_rate_hz", 250.0);
-    declare_parameter<int>("update_rate", 250);
-    declare_parameter<std::string>("frame_id", "touch_base");
-    declare_parameter<std::string>("child_frame_id", "touch_ee");
-    declare_parameter<std::string>(
-      "controller_plugin", "touch_controllers/ImpedanceController");
-    declare_parameter<double>("max_force", 8.0);
-    declare_parameter<std::vector<double>>("impedance_stiffness", {45.0, 45.0, 45.0});
-    declare_parameter<std::vector<double>>("impedance_damping", {2.5, 2.5, 2.5});
-
-    const std::string device_name = get_parameter("device_name").as_string();
-    const double publish_rate_hz = get_parameter("publish_rate_hz").as_double();
-    const int update_rate = get_parameter("update_rate").as_int();
-    frame_id_ = get_parameter("frame_id").as_string();
-    child_frame_id_ = get_parameter("child_frame_id").as_string();
-    const std::string controller_plugin = get_parameter("controller_plugin").as_string();
-    const double max_force = get_parameter("max_force").as_double();
-
-    command_state_.impedance_stiffness = read_vec3_parameter("impedance_stiffness");
-    command_state_.impedance_damping = read_vec3_parameter("impedance_damping");
-
-    if (!controller_plugin.empty()) {
-      RCLCPP_INFO(
-        get_logger(), "Ignoring controller_plugin='%s'; touch_driver now uses built-in impedance "
-        "control in the HD loop.",
-        controller_plugin.c_str());
-    }
-
-    device_ = std::make_unique<GeomagicStyleDevice>(max_force);
-    device_->set_command(command_state_);
-
-    joint_state_pub_ = create_publisher<sensor_msgs::msg::JointState>("/joint_states", 10);
-    pose_pub_ = create_publisher<geometry_msgs::msg::PoseStamped>("/touch/state/pose", 10);
-    twist_pub_ = create_publisher<geometry_msgs::msg::TwistStamped>("/touch/state/twist", 10);
-    wrench_pub_ =
-      create_publisher<geometry_msgs::msg::WrenchStamped>("/touch/state/wrench_commanded", 10);
-
-    direct_wrench_sub_ = create_subscription<geometry_msgs::msg::WrenchStamped>(
-      "/touch/command/direct_wrench", 10,
-      [this](const geometry_msgs::msg::WrenchStamped::SharedPtr msg) {
-        command_state_.direct_force_ros_n = {
-          msg->wrench.force.x,
-          msg->wrench.force.y,
-          msg->wrench.force.z,
-        };
-        device_->set_command(command_state_);
-      });
-
-    target_pose_sub_ = create_subscription<geometry_msgs::msg::PoseStamped>(
-      "/touch/command/target_pose", 10,
-      [this](const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
-        command_state_.target_position_m = {
-          msg->pose.position.x,
-          msg->pose.position.y,
-          msg->pose.position.z,
-        };
-        command_state_.target_pose_valid = true;
-        device_->set_command(command_state_);
-        RCLCPP_INFO(
-          get_logger(), "Received target pose: [%.6f, %.6f, %.6f]",
-          command_state_.target_position_m[0], command_state_.target_position_m[1],
-          command_state_.target_position_m[2]);
-      });
-
-    const double rate_hz = publish_rate_hz > 0.0 ? publish_rate_hz : static_cast<double>(update_rate);
-    const auto publish_period = std::chrono::duration<double>(1.0 / std::max(rate_hz, 1.0));
-    publish_timer_ = create_wall_timer(
-      std::chrono::duration_cast<std::chrono::nanoseconds>(publish_period),
-      std::bind(&TouchNode::publish_state, this));
-
-    device_->open(device_name);
-  }
-
-private:
-  std::array<double, 3> read_vec3_parameter(const std::string & name)
-  {
-    const auto values = get_parameter(name).as_double_array();
-    if (values.size() != 3) {
-      throw std::runtime_error("Parameter '" + name + "' must have exactly 3 elements.");
-    }
-    return {values[0], values[1], values[2]};
-  }
-
-  void publish_state()
-  {
-    const ServoSnapshot snapshot = device_->latest_snapshot();
-    if (!snapshot.valid) {
-      return;
-    }
-
-    const auto stamp = now();
-    std::array<double, 6> previous_joint_positions{};
-    const std::array<double, 6> * previous_joint_positions_ptr = nullptr;
-    if (snapshot.have_previous_raw_state) {
-      previous_joint_positions = calculate_joint_positions_rad(snapshot.previous_raw_state);
-      previous_joint_positions_ptr = &previous_joint_positions;
-    }
-
-    const DeviceState state = transform_raw_state_to_ros(
-      snapshot.raw_state, previous_joint_positions_ptr, snapshot.sample_period_s);
-    const auto commanded_force_ros =
-      transform_vector_device_to_ros(snapshot.commanded_device_force_n);
-
+  struct DeviceState {
     sensor_msgs::msg::JointState joint_state;
-    joint_state.header.stamp = stamp;
-    joint_state.name = {"waist", "shoulder", "elbow", "yaw", "pitch", "roll"};
-    joint_state.position.assign(state.joint_positions_rad.begin(), state.joint_positions_rad.end());
-    joint_state.velocity.assign(
-      state.joint_velocities_rad_s.begin(), state.joint_velocities_rad_s.end());
-    joint_state.effort = {
-      snapshot.joint_torque_nm[0],
-      snapshot.joint_torque_nm[1],
-      snapshot.joint_torque_nm[2],
-      snapshot.gimbal_torque_nm[0],
-      snapshot.gimbal_torque_nm[1],
-      snapshot.gimbal_torque_nm[2],
-    };
-    joint_state_pub_->publish(joint_state);
+    geometry_msgs::msg::TwistStamped twist_stamped;
+  };
 
-    geometry_msgs::msg::PoseStamped pose;
-    pose.header.stamp = stamp;
-    pose.header.frame_id = frame_id_;
-    pose.pose.position.x = state.position_m[0];
-    pose.pose.position.y = state.position_m[1];
-    pose.pose.position.z = state.position_m[2];
-    pose.pose.orientation.x = state.orientation_xyzw[0];
-    pose.pose.orientation.y = state.orientation_xyzw[1];
-    pose.pose.orientation.z = state.orientation_xyzw[2];
-    pose.pose.orientation.w = state.orientation_xyzw[3];
-    pose_pub_->publish(pose);
+public:
+  DeviceDriver(const rclcpp::NodeOptions &options)
+      : Node("touch_driver", options), q_prev_set_(false) {
+    this->declare_params_();
+    this->get_params_();
+    this->init_msgs_();
+    this->init_pubs_(); // cheers ;)
+    this->init_subs_();
+    ctrl_timer_ = this->create_wall_timer(
+        std::chrono::milliseconds(static_cast<int64_t>(1.e3 / params_.update_rate)),
+        std::bind(&DeviceDriver::on_update_, this));
+    RCLCPP_INFO(this->get_logger(), "Instantiating device %s...", params_.device_name.c_str());
+    device_ = std::make_unique<Device>();
+    this->init_device_params_();
+    device_->open(params_.device_name);
+    RCLCPP_INFO(this->get_logger(), "Done. haptic callbacks observed: %llu",
+                static_cast<unsigned long long>(
+                    device_->get_state().callback_count.load(std::memory_order_relaxed)));
+  };
 
-    geometry_msgs::msg::TwistStamped twist;
-    twist.header.stamp = stamp;
-    twist.header.frame_id = child_frame_id_;
-    twist.twist.linear.x = state.linear_velocity_m_s[0];
-    twist.twist.linear.y = state.linear_velocity_m_s[1];
-    twist.twist.linear.z = state.linear_velocity_m_s[2];
-    twist.twist.angular.x = snapshot.angular_velocity_rad_s[0];
-    twist.twist.angular.y = snapshot.angular_velocity_rad_s[1];
-    twist.twist.angular.z = snapshot.angular_velocity_rad_s[2];
-    twist_pub_->publish(twist);
-
-    geometry_msgs::msg::WrenchStamped wrench;
-    wrench.header.stamp = stamp;
-    wrench.header.frame_id = frame_id_;
-    wrench.wrench.force.x = commanded_force_ros[0];
-    wrench.wrench.force.y = commanded_force_ros[1];
-    wrench.wrench.force.z = commanded_force_ros[2];
-    wrench_pub_->publish(wrench);
+  ~DeviceDriver() override {
+    // Stop ROS callbacks before closing the haptic device so no timer or
+    // subscription can touch Device::State while the HDAPI scheduler is being
+    // stopped and the device handle is being released.
+    if (ctrl_timer_) {
+      ctrl_timer_->cancel();
+      ctrl_timer_.reset();
+    }
+    w_sub_.reset();
+    if (device_) {
+      RCLCPP_INFO(this->get_logger(), "Closing haptic device...");
+      device_->close();
+      device_.reset();
+      RCLCPP_INFO(this->get_logger(), "Haptic device closed.");
+    }
   }
 
-  ServoCommand command_state_;
-  std::string frame_id_;
-  std::string child_frame_id_;
-  std::unique_ptr<GeomagicStyleDevice> device_;
+protected:
+  // Published states
+  geometry_msgs::msg::TransformStamped tf_stamped_;
+  sensor_msgs::msg::JointState js_;
+  bool q_prev_set_;
+  Eigen::Matrix<double, DOF, 1> q_, q_prev_, dq_;
+  geometry_msgs::msg::TwistStamped ts_;
 
-  rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr joint_state_pub_;
-  rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub_;
-  rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr twist_pub_;
-  rclcpp::Publisher<geometry_msgs::msg::WrenchStamped>::SharedPtr wrench_pub_;
-  rclcpp::Subscription<geometry_msgs::msg::WrenchStamped>::SharedPtr direct_wrench_sub_;
-  rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr target_pose_sub_;
-  rclcpp::TimerBase::SharedPtr publish_timer_;
+  // Parameters
+  DriverParams params_;
+
+  // Device state
+  DeviceState state_;
+
+  // Publishers
+  rclcpp::TimerBase::SharedPtr ctrl_timer_;
+  rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr js_pub_;
+  rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr ts_pub_;
+  std::shared_ptr<tf2_ros::TransformBroadcaster> tf_bc_;
+
+  // Subscribers
+  rclcpp::Subscription<geometry_msgs::msg::Wrench>::SharedPtr w_sub_;
+
+  // Device
+  std::unique_ptr<Device> device_;
+
+protected:
+  void declare_params_() {
+    this->declare_parameter("update_rate", 200);
+    this->declare_parameter("device_name", "");
+    this->declare_parameter("impedance_enabled", true);
+    this->declare_parameter("max_force", 8.0);
+    this->declare_parameter("Kx", 45.0);
+    this->declare_parameter("Ky", 45.0);
+    this->declare_parameter("Kz", 45.0);
+    this->declare_parameter("Dx", 2.5);
+    this->declare_parameter("Dy", 2.5);
+    this->declare_parameter("Dz", 2.5);
+  };
+  void get_params_() {
+    this->get_parameter("update_rate", params_.update_rate);
+    this->get_parameter("frame_id", params_.frame_id);
+    this->get_parameter("child_frame_id", params_.child_frame_id);
+    this->get_parameter("device_name", params_.device_name);
+    this->get_parameter("impedance_enabled", params_.impedance_enabled);
+    this->get_parameter("max_force", params_.max_force);
+    this->get_parameter("Kx", params_.Kx);
+    this->get_parameter("Ky", params_.Ky);
+    this->get_parameter("Kz", params_.Kz);
+    this->get_parameter("Dx", params_.Dx);
+    this->get_parameter("Dy", params_.Dy);
+    this->get_parameter("Dz", params_.Dz);
+    if (params_.device_name.empty()) {
+      std::string err = "No device_name given, shutting down.";
+      RCLCPP_ERROR(this->get_logger(), err.c_str());
+      throw std::runtime_error(err);
+    }
+    RCLCPP_INFO(this->get_logger(), "*** Parameters");
+    RCLCPP_INFO(this->get_logger(), "*   update_rate: %i Hz", params_.update_rate);
+    RCLCPP_INFO(this->get_logger(), "*   frame_id: %s", params_.frame_id.c_str());
+    RCLCPP_INFO(this->get_logger(), "*   child_frame_id: %s", params_.child_frame_id.c_str());
+    RCLCPP_INFO(this->get_logger(), "*   controller: builtin impedance");
+    RCLCPP_INFO(this->get_logger(), "*   impedance_enabled: %s",
+                params_.impedance_enabled ? "true" : "false");
+  };
+  void init_msgs_() {
+    // Joint states
+    js_.effort.resize(DOF, 0.);
+    js_.position.resize(DOF, 0.);
+    js_.velocity.resize(DOF, 0.);
+    js_.name = {"waist",  "shoulder",  "elbow",
+                "yaw", "pitch", "roll"};
+  }
+  void init_pubs_() {
+    js_pub_ = this->create_publisher<sensor_msgs::msg::JointState>("joint_states",
+                                                                   rclcpp::SensorDataQoS());
+    ts_pub_ = this->create_publisher<geometry_msgs::msg::TwistStamped>("twist",
+                                                                       rclcpp::SensorDataQoS());
+    tf_bc_ = std::make_shared<tf2_ros::TransformBroadcaster>(this);
+  };
+  void init_subs_() {
+    w_sub_ = this->create_subscription<geometry_msgs::msg::Wrench>(
+        "command/wrench", rclcpp::SensorDataQoS(),
+        [this](geometry_msgs::msg::Wrench::SharedPtr msg) {
+          auto &state = device_->get_state();
+          state.command.device_force_n = {
+              msg->force.x,
+              msg->force.y,
+              msg->force.z,
+          };
+        });
+  };
+  void init_device_params_() {
+    auto &state = device_->get_state();
+    state.impedance_enabled = params_.impedance_enabled;
+    state.max_force = params_.max_force;
+    state.command.impedance_stiffness = {params_.Kx, params_.Ky, params_.Kz};
+    state.command.impedance_damping = {params_.Dx, params_.Dy, params_.Dz};
+  };
+  void on_update_() {
+    // get the current state
+    const auto &state = device_->get_state();
+    const auto stamp = this->get_clock()->now();
+
+    // Pack transform stamp and translation
+    tf_stamped_.header.stamp = stamp;
+    tf_stamped_.header.frame_id = params_.frame_id;
+    tf_stamped_.child_frame_id = params_.child_frame_id;
+    tf_stamped_.transform.translation.x = MM2M * state.transform[12];
+    tf_stamped_.transform.translation.y = MM2M * state.transform[13];
+    tf_stamped_.transform.translation.z = MM2M * state.transform[14];
+
+    // Convert state transform to rotation matrix, then quaternion, and pack transform
+    Eigen::Matrix3d R(3, 3);
+    R(0, 0) = state.transform[0];
+    R(0, 1) = state.transform[1];
+    R(0, 2) = state.transform[2];
+    R(1, 0) = state.transform[4];
+    R(1, 1) = state.transform[5];
+    R(1, 2) = state.transform[6];
+    R(2, 0) = state.transform[8];
+    R(2, 1) = state.transform[9];
+    R(2, 2) = state.transform[10];
+
+    Eigen::Quaterniond quat(R.transpose()); // require transpose otherwise rotation is inverted
+    tf_stamped_.transform.rotation.x = quat.x();
+    tf_stamped_.transform.rotation.y = quat.y();
+    tf_stamped_.transform.rotation.z = quat.z();
+    tf_stamped_.transform.rotation.w = quat.w();
+
+    // Send transform
+    tf_bc_->sendTransform(tf_stamped_);
+
+    // Pack joint states
+    js_.header.stamp = stamp;
+
+    for (uint i = 0; i < 3; ++i) {
+      q_(i) = state.joint_angles[i];
+      q_(i + 3) = state.gimbal_angles[i];
+      js_.effort[i] = state.joint_torque[i];
+      js_.effort[i + 3] = state.gimbal_torque[i];
+    }
+
+    if (q_prev_set_) {
+      dq_ = (q_ - q_prev_) * (1.0 / static_cast<double>(params_.update_rate));
+    } else {
+      dq_.setZero();
+    }
+
+    q_prev_ = q_;
+    q_prev_set_ = true;
+
+    for (uint i = 0; i < 6; ++i) {
+      js_.position[i] = q_(i);
+      js_.velocity[i] = dq_(i);
+    }
+
+    // Publish joint states
+    js_pub_->publish(js_);
+
+    // Pack twist stamped
+    ts_.header.stamp = stamp;
+    ts_.header.frame_id = params_.child_frame_id;
+    ts_.twist.linear.x = MM2M * state.velocity[0];
+    ts_.twist.linear.y = MM2M * state.velocity[1];
+    ts_.twist.linear.z = MM2M * state.velocity[2];
+
+    ts_.twist.angular.x = state.angular_velocity[0];
+    ts_.twist.angular.y = state.angular_velocity[1];
+    ts_.twist.angular.z = state.angular_velocity[2];
+
+    // Publish twist stamped
+    ts_pub_->publish(ts_);
+  };
 };
+} // namespace touch_hardware
 
-}  // namespace
-}  // namespace touch_hardware
-
-int main(int argc, char ** argv)
-{
-  rclcpp::init(argc, argv);
-  try {
-    auto node = std::make_shared<touch_hardware::TouchNode>();
-    rclcpp::spin(node);
-  } catch (const std::exception & error) {
-    fprintf(stderr, "touch_driver failed: %s\n", error.what());
-    rclcpp::shutdown();
-    return 1;
-  }
-  rclcpp::shutdown();
-  return 0;
-}
+#include <rclcpp_components/register_node_macro.hpp>
+RCLCPP_COMPONENTS_REGISTER_NODE(touch_hardware::DeviceDriver)

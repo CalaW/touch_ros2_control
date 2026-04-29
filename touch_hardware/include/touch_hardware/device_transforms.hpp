@@ -1,7 +1,7 @@
 #ifndef TOUCH_HARDWARE__DEVICE_TRANSFORMS_HPP_
 #define TOUCH_HARDWARE__DEVICE_TRANSFORMS_HPP_
 
-#include "touch_hardware/controller_base.hpp"
+#include "touch_hardware/types.hpp"
 
 #include <Eigen/Geometry>
 
